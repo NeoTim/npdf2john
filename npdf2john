@@ -1,0 +1,3156 @@
+#!/usr/bin/perl -w
+#------------------------------------------------------------------------------
+# File:         exiftool
+#
+# Description:  Read/write meta information
+#
+# Revisions:    Nov. 12/03 - P. Harvey Created
+#               (See html/history.html for revision history)
+#
+# References:   ATV - Alexander Vonk, private communication
+#------------------------------------------------------------------------------
+use strict;
+require 5.004;
+
+my $version = '8.99';
+
+# add our 'lib' directory to the include list BEFORE 'use Image::ExifTool'
+my $exeDir;
+BEGIN {
+    # get exe directory
+    $exeDir = ($0 =~ /(.*)[\\\/]/) ? $1 : '.';
+    # add lib directory at start of include path
+    unshift @INC, "$exeDir/lib";
+    # load or disable config file if specified
+    if (@ARGV and lc($ARGV[0]) eq '-config') {
+        shift;
+        $Image::ExifTool::configFile = shift;
+    }
+}
+use Image::ExifTool qw{:Public Open};
+
+# function prototypes
+sub SigInt();
+sub SigCont();
+sub Cleanup();
+sub GetImageInfo($$);
+sub SetImageInfo($$$);
+sub CleanXML($);
+sub EncodeXML($);
+sub FormatXML($$$);
+sub EscapeJSON($;$);
+sub FormatJSON($$$);
+sub PrintCSV();
+sub ConvertBinary($);
+sub AddSetTagsFile($;$);
+sub DoSetFromFile($$$);
+sub CleanFilename($);
+sub ProcessFiles($;$);
+sub ScanDir($$;$);
+sub PreserveTime();
+sub LoadPrintFormat($);
+sub FilenameSPrintf($;$);
+sub NextUnusedFilename($;$);
+sub CreateDirectory($);
+sub OpenOutputFile($);
+sub AcceptFile($);
+sub SlurpFile($$);
+sub Rename($$);
+sub ReadStayOpen($);
+sub PrintTagList($@);
+sub PrintErrors($$$);
+
+$SIG{INT}  = 'SigInt';  # do cleanup on Ctrl-C
+$SIG{CONT} = 'SigCont'; # (allows break-out of delays)
+END {
+    Cleanup();
+}
+
+# declare all static file-scope variables
+my @commonArgs;     # arguments common to all commands
+my @csvFiles;       # list of files when reading with CSV option
+my @csvTags;        # order of tags for first file with CSV option (lower case)
+my @delFiles;       # list of files to delete
+my @dynamicFiles;   # list of -tagsFromFile files with dynamic names and -TAG<=FMT pairs
+my @exclude;        # list of excluded tags
+my @files;          # list of files and directories to scan
+my @moreArgs;       # more arguments to process after -stay_open -@
+my @newValues;      # list of new tag values to set
+my @srcFmt;         # source file name format strings
+my @tags;           # list of tags to extract
+my %csvTags;        # lookup for all found tags with CSV option (lower case keys)
+my %database;       # lookup for database information based on file name
+my %filterExt;      # lookup for filtered extensions
+my %ignore;         # directory names to ignore
+my %preserveTime;   # preserved timestamps for files
+my %printFmt;       # the contents of the print format file
+my %setTags;        # hash of list references for tags to set from files
+my %setTagsList;    # list of other tag lists for multiple -tagsFromFile from the same file
+my %warnedOnce;     # lookup for once-only warnings
+my $allGroup;       # show group name for all tags
+my $argFormat;      # use exiftool argument-format output
+my $binaryOutput;   # flag for binary output (undef or 1, or 0 for binary XML/PHP)
+my $binaryStdout;   # flag set if we output binary to stdout
+my $comma;          # flag set if we need a comma in JSON output
+my $condition;      # conditional processing of files
+my $count;          # count of files scanned
+my $countBad;       # count of files with errors
+my $countBadCr;     # count files not created due to errors
+my $countBadWr;     # count write errors
+my $countCopyWr;    # count of files copied without being changed
+my $countCreated;   # count output files created
+my $countDir;       # count of directories scanned
+my $countFailed;    # count files that failed condition
+my $countGoodCr;    # count files created OK
+my $countGoodWr;    # count files written OK
+my $countNewDir;    # count of directories created
+my $countSameWr;    # count files written OK but not changed
+my $critical;       # flag for critical operations (disable CTRL-C)
+my $csv;            # flag for CSV option (set to "CSV", or maybe "JSON" when writing)
+my $csvAdd;         # flag to add CSV information to existing lists
+my $csvSaveCount;   # save counter for last CSV file loaded
+my $deleteOrig;     # 0=restore original files, 1=delete originals, 2=delete w/o asking
+my $disableOutput;  # flag to disable normal output
+my $doSetFileName;  # flag set if FileName may be written
+my $doUnzip;        # flag to extract info from .gz and .bz2 files
+my $escapeHTML;     # flag to escape printed values for html
+my $evalWarning;    # warning from eval
+my $executeID;      # -execute ID number
+my $fileHeader;     # header to print to output file (or console, once)
+my $fileTrailer;    # trailer for output file
+my $filtered;       # flag indicating file was filtered by name
+my $filterFlag;     # file filter flag (0x01=deny extensions, 0x02=allow extensions)
+my $fixLen;         # flag to fix description lengths when writing alternate languages
+my $forcePrint;     # force printing of tags whose values weren't found
+my $helped;         # flag to avoid printing help if no tags specified
+my $html;           # flag for html-formatted output (2=html dump)
+my $interrupted;    # flag set if CTRL-C is pressed during a critical process
+my $isWriting;      # flag set if we are writing tags
+my $joinLists;      # flag set to join list values into a single string
+my $json;           # flag for JSON/PHP output format (1=JSON, 2=PHP)
+my $listItem;       # item number for extracting single item from a list
+my $listSep;        # list item separator (', ' by default)
+my $mainTool;       # main ExifTool object
+my $multiFile;      # non-zero if we are scanning multiple files
+my $outFormat;      # -1=Canon format, 0=same-line, 1=tag names, 2=values only
+my $outOpt;         # output file or directory name
+my $overwriteOrig;  # flag to overwrite original file
+my $pause;          # pause before returning
+my $preserveTime;   # flag to preserve times of updated files
+my $progress;       # progress cound
+my $progressMax;    # total number of files to process
+my $progStr;        # progress message string
+my $quiet;          # flag to disable printing of informational messages / warnings
+my $recurse;        # recurse into subdirectories
+my $rtnVal;         # command return value (0=success)
+my $saveCount;      # count the number of times we will/did call SaveNewValues()
+my $scanWritable;   # flag to process only writable file types
+my $seqFileNum;     # sequential file number used for %C
+my $showGroup;      # number of group to show (may be zero or '')
+my $showTagID;      # non-zero to show tag ID's
+my $stayOpenBuff='';# buffer for -stay_open file
+my $stayOpenFile;   # name of the current -stay_open argfile
+my $structOpt;      # output structured XMP information (JSON and XML output only)
+my $tabFormat;      # non-zero for tab output format
+my $textOut;        # extension for text output file (or undef for no output)
+my $textOverwrite;  # flag to overwrite existing text output file
+my $tmpFile;        # temporary file to delete on exit
+my $tmpText;        # temporary text file
+my $utf8;           # flag set if we are using UTF-8 encoding
+my $validFile;      # flag indicating we processed a valid file
+my $verbose;        # verbose setting
+my $xml;            # flag for XML-formatted output
+
+# flag to keep the input -@ argfile open:
+# 0 = normal behaviour
+# 1 = received "-stay_open true" and waiting for argfile to keep open
+# 2 = currently reading from STAYOPEN argfile
+# 3 = waiting for -@ to switch to a new STAYOPEN argfile
+my $stayOpen = 0;
+
+# lookup for O/S names which may use a backslash as a directory separator
+# (ref File::Spec of PathTools-3.2701)
+my %hasBackslash = ( MSWin32 => 1, os2 => 1, dos => 1, NetWare => 1, symbian => 1, cygwin => 1 );
+
+# lookup for O/S names which use CR/LF newlines
+my $isCRLF = { MSWin32 => 1, os2 => 1, dos => 1 }->{$^O};
+
+# lookup for JSON characters that we escape specially
+my %jsonChar = ( '"'=>'"', '\\'=>'\\', "\t"=>'t', "\n"=>'n', "\r"=>'r' );
+
+# options requiring additional arguments
+# (used only to skip over these arguments when reading -stay_open ARGFILE)
+my %optArgs = (
+    '-tagsfromfile' => 1, '-addtagsfromfile' => 1, '-alltagsfromfile' => 1,
+    '-@' => 1,
+    '-c' => 1, '-coordformat' => 1,
+    '-charset' => 0, # (optional arg; OK because arg cannot begin with "-")
+    '-config' => 1,
+    '-d' => 1, '-dateformat' => 1,
+    '-D' => 0, # nececessary to avoid matching lower-case equivalent
+    '-echo' => 1, '-echo2' => 1,
+    '-ext' => 1, '--ext' => 1, '-extension' => 1, '--extension' => 1,
+    '-fileorder' => 1,
+    '-geotag' => 1,
+    '-i' => 1, '-ignore' => 1,
+    '-if' => 1,
+    '-lang' => 0, # (optional arg; cannot begin with "-")
+    '-listitem' => 1,
+    '-o' => 1, '-out' => 1,
+    '-p' => 1, '-printformat' => 1,
+    '-P' => 0,
+    '-password' => 1,
+    '-require' => 1,
+    '-sep' => 1, '-separator' => 1,
+    '-srcfile' => 1,
+    '-stay_open' => 1,
+    '-use' => 1,
+    '-w' => 1, '-w!' => 1, '-textout' => 1, '-textout!' => 1,
+    '-x' => 1, '-exclude' => 1,
+    '-X' => 0,
+);
+
+# exit routine
+sub Exit {
+    if ($pause) {
+        if (eval 'require Term::ReadKey') {
+            print STDERR "-- press any key --";
+            Term::ReadKey::ReadMode('cbreak');
+            Term::ReadKey::ReadKey(0);
+            Term::ReadKey::ReadMode(0);
+            print STDERR "\b \b" x 20;
+        } else {
+            print STDERR "-- press RETURN --\n";
+            <STDIN>;
+        }
+    }
+    exit shift;
+}
+# my warning and error routines (NEVER say "die"!)
+sub Warn  { warn(@_) if $quiet < 2 or $_[0] =~ /^Error/; }
+sub Error { Warn @_; $rtnVal = 1; }
+sub WarnOnce($) {
+    Warn(@_) and $warnedOnce{$_[0]} = 1 unless $warnedOnce{$_[0]};
+}
+
+# define signal handlers and cleanup routine
+sub SigInt()  {
+    $critical and $interrupted = 1, return;
+    Cleanup();
+    exit 1;
+}
+sub SigCont() { }
+sub Cleanup() {
+    unlink $tmpFile if defined $tmpFile;
+    unlink $tmpText if defined $tmpText;
+    undef $tmpFile;
+    undef $tmpText;
+    PreserveTime() if %preserveTime;
+}
+
+#------------------------------------------------------------------------------
+# main script
+#
+
+# isolate arguments common to all commands
+if (grep /^-common_args$/i, @ARGV) {
+    my (@newArgs, $common);
+    foreach (@ARGV) {
+        if (/^-common_args$/i) {
+            $common = 1;
+        } elsif ($common) {
+            push @commonArgs, $_;
+        } else {
+            push @newArgs, $_;
+        }
+    }
+    @ARGV = @newArgs if $common;
+}
+
+#..............................................................................
+# loop over sets of command-line arguments separated by "-execute"
+Command: while (@ARGV or not defined $rtnVal or $stayOpen >= 2 or @commonArgs)
+{
+
+# attempt to restore text mode for STDOUT if necessary
+if ($binaryStdout) {
+    binmode(STDOUT,':crlf') if $] >= 5.006 and $isCRLF;
+    $binaryStdout = 0;
+}
+
+# flush console and print "{ready}" message if -stay_open is in effect
+if ($stayOpen >= 2 and not $quiet) {
+    eval 'require IO::Handle' and STDERR->flush();
+    my $id = defined $executeID ? $executeID : '';
+    my $save = $|;
+    $| = 1;     # turn on output autoflush for stdout
+    print "{ready$id}\n";
+    $| = $save; # restore original autoflush setting
+}
+
+$rtnVal = 0 unless defined $rtnVal;
+
+# initialize necessary static file-scope variables
+# (not done: @commonArgs, @moreArgs, $critical, $binaryStdout, $helped,
+#  $interrupted, $mainTool, $pause, $rtnVal, $stayOpen, $stayOpenBuff, $stayOpenFile)
+undef @csvFiles;
+undef @csvTags;
+undef @delFiles;
+undef @dynamicFiles;
+undef @exclude;
+undef @files;
+undef @newValues;
+undef @srcFmt;
+undef @tags;
+undef %csvTags;
+undef %database;
+undef %filterExt;
+undef %ignore;
+undef %printFmt;
+undef %preserveTime;
+undef %setTags;
+undef %setTagsList;
+undef %warnedOnce;
+undef $allGroup;
+undef $argFormat;
+undef $binaryOutput;
+undef $comma;
+undef $condition;
+undef $csv;
+undef $csvAdd;
+undef $deleteOrig;
+undef $disableOutput;
+undef $doSetFileName;
+undef $doUnzip;
+undef $escapeHTML;
+undef $evalWarning;
+undef $executeID;
+undef $fileHeader;
+undef $fileTrailer;
+undef $filtered;
+undef $fixLen;
+undef $forcePrint;
+undef $joinLists;
+undef $listItem;
+undef $multiFile;
+undef $outOpt;
+undef $preserveTime;
+undef $progress;
+undef $progressMax;
+undef $recurse;
+undef $scanWritable;
+undef $showGroup;
+undef $showTagID;
+undef $structOpt;
+undef $textOut;
+undef $textOverwrite;
+undef $tmpFile;
+undef $tmpText;
+undef $validFile;
+undef $verbose;
+
+$count = 0;
+$countBad = 0;
+$countBadCr = 0;
+$countBadWr = 0;
+$countCopyWr = 0;
+$countCreated = 0;
+$countDir = 0;
+$countFailed = 0;
+$countGoodCr = 0;
+$countGoodWr = 0;
+$countNewDir = 0;
+$countSameWr = 0;
+$csvSaveCount = 0;
+$filterFlag = 0;
+$html = 0;
+$isWriting = 0;
+$json = 0;
+$listSep = ', ';
+$outFormat = 0;
+$overwriteOrig = 0;
+$progStr = '';
+$quiet = 0;
+$saveCount = 0;
+$seqFileNum = 0;
+$tabFormat = 0;
+$utf8 = 1;
+$xml = 0;
+
+# define local variables used only in this command loop
+my @fileOrder;      # tags to use for ordering of input files
+my %excludeGrp;     # hash of tags excluded by group
+my $addGeotime;     # automatically added geotime argument
+my $allInGroup;     # flag to show all tags in a group
+my $doGlob;         # flag set to do filename wildcard expansion
+my $escapeXML;      # flag to escape printed values for xml
+my $setTagsFile;    # filename for last TagsFromFile option
+my $sortOpt;        # sort option is used
+my $useMWG;         # flag set if we are using any MWG tag
+
+my ($argsLeft, @nextPass);
+my $pass = 0;
+
+# for Windows, use globbing for wildcard expansion if available - MK/20061010
+if ($^O eq 'MSWin32' and eval 'require File::Glob') {
+    # override the core glob forcing case insensitivity
+    import File::Glob qw(:globally :nocase);
+    $doGlob = 1;
+}
+
+$mainTool = new Image::ExifTool;        # create ExifTool object
+
+# don't extract duplicates by default unless set by UserDefined::Options
+$mainTool->Options(Duplicates => 0) unless %Image::ExifTool::UserDefined::Options
+    and defined $Image::ExifTool::UserDefined::Options{Duplicates};
+
+# parse command-line options in 2 passes...
+# pass 1: set all of our ExifTool options
+# pass 2: print all of our help and informational output (-list, -ver, etc)
+for (;;) {
+
+  # execute the command now if no more arguments or -execute is used
+  if (not @ARGV or $ARGV[0] =~ /^-execute(\d*)$/i) {
+    if (@ARGV) {
+        $executeID = $1;        # save -execute number for "{ready}" response
+        $helped = 1;            # don't show help if we used -execute
+    } elsif ($stayOpen >= 2) {
+        ReadStayOpen(\@ARGV);   # read more arguments from -stay_open file
+        next;
+    }
+    if ($pass == 0) {
+        # insert common arguments now if not done already
+        if (@commonArgs and not defined $argsLeft) {
+            # count the number of arguments remaining for subsequent commands
+            $argsLeft = scalar(@ARGV) + scalar(@moreArgs);
+            unshift @ARGV, @commonArgs;
+            # all done with commonArgs if this is the end of the command
+            undef @commonArgs unless $argsLeft;
+            next;
+        }
+        # check if we have more arguments now than we did before we processed
+        # the common arguments.  If so, then we have an infinite processing loop
+        if (defined $argsLeft and $argsLeft < scalar(@ARGV) + scalar(@moreArgs)) {
+            Warn "Ignoring -common_args from $ARGV[0] onwards to avoid infinite recursion\n";
+            while ($argsLeft < scalar(@ARGV) + scalar(@moreArgs)) {
+                @ARGV and shift(@ARGV), next;
+                shift @moreArgs;
+            }
+        }
+        # require MWG module if used in any argument
+        # (note: this also covers the -p option because these tags were added to @tags)
+        $useMWG = 1 if not $useMWG and grep /^mwg:/i, @tags;
+        require Image::ExifTool::MWG if $useMWG;
+    }
+    if (@nextPass) {
+        # process arguments which were deferred to the next pass
+        unshift @ARGV, @nextPass;
+        undef @nextPass;
+        ++$pass;
+        next;
+    }
+    @ARGV and shift;    # remove -execute from argument list
+    last;               # process the command now
+  }
+  $_ = shift;
+  if (s/^(-|\xe2\x88\x92)//) {  # allow funny dashes (nroff dash bug for cut-n-paste from pod)
+    s/^\xe2\x88\x92/-/;         # translate double-dash too
+    my $a = lc $_;
+    if (/^list([wfrdx]|wf|g(\d*))?$/i) {
+        $pass or push(@nextPass,"-$_");
+        my $type = lc($1 || '');
+        if (not $type or $type eq 'w' or $type eq 'x') {
+            my $group;
+            if ($ARGV[0] and $ARGV[0] =~ /^(-|\xe2\x88\x92)(.+):(all|\*)$/i) {
+                if ($pass == 0) {
+                    $useMWG = 1 if lc($2) eq 'mwg';
+                    push(@nextPass, shift);
+                    next;
+                }
+                $group = $2;
+                shift;
+                $group =~ /IFD/i and Warn("Can't list tags for specific IFD\n"), next;
+                $group =~ /^(all|\*)$/ and undef $group;
+            } else {
+                $pass or next;
+            }
+            $helped = 1;
+            if ($type eq 'x') {
+                require Image::ExifTool::TagInfoXML;
+                my %opts;
+                $opts{Flags} = 1 if $forcePrint;
+                $opts{NoDesc} = 1 if $outFormat > 0;
+                Image::ExifTool::TagInfoXML::Write(undef, $group, %opts);
+                next;
+            }
+            my $wr = ($type eq 'w');
+            my $msg = ($wr ? 'Writable' : 'Available') . ($group ? " $group" : '') . ' tags';
+            PrintTagList($msg, $wr ? GetWritableTags($group) : GetAllTags($group));
+            # also print shortcuts if listing all tags
+            next if $group or $wr;
+            my @tagList = GetShortcuts();
+            PrintTagList('Command-line shortcuts', @tagList) if @tagList;
+            next;
+        }
+        $pass or next;
+        $helped = 1;
+        if ($type eq 'wf') {
+            my @wf;
+            CanWrite($_) and push @wf, $_ foreach GetFileType();
+            PrintTagList('Writable file extensions', @wf);
+        } elsif ($type eq 'f') {
+            PrintTagList('Supported file extensions', GetFileType());
+        } elsif ($type eq 'r') {
+            PrintTagList('Recognized file extensions', GetFileType(undef, 0));
+        } elsif ($type eq 'd') {
+            PrintTagList('Deletable groups', GetDeleteGroups());
+        } else { # 'g(\d*)'
+            # list all groups in specified family
+            my $family = $2 || 0;
+            PrintTagList("Groups in family $family", GetAllGroups($family));
+        }
+        next;
+    }
+    if ($a eq 'ver') {
+        $pass or push(@nextPass,'-ver'), next;
+        my $libVer = $Image::ExifTool::VERSION;
+        my $str = $libVer eq $version ? '' : " [Warning: Library version is $libVer]";
+        print("$version$str$Image::ExifTool::RELEASE\n");
+        $helped = 1;
+        next;
+    }
+    if (/^(all|add)?tagsfromfile(=.*)?$/i) {
+        $setTagsFile = $2 ? substr($2,1) : (@ARGV ? shift : '');
+        if ($setTagsFile eq '') {
+            Error("File must be specified for -tagsFromFile option\n");
+            next Command;
+        }
+        # create necessary lists, etc for this new -tagsFromFile file
+        AddSetTagsFile($setTagsFile, { Replace => ($1 and lc($1) eq 'add') ? 0 : 1 } );
+        next;
+    }
+    if ($a eq '@') {
+        my $argFile = shift or Error("Expecting filename for -\@ option\n"), next Command;
+        # switch to new ARGFILE if using chained -stay_open options
+        if ($stayOpen == 1) {
+            # defer remaining arguments until we close this argfile
+            @moreArgs = @ARGV;
+            undef @ARGV;
+        } elsif ($stayOpen == 3) {
+            if ($stayOpenFile and $stayOpenFile ne '-' and $argFile eq $stayOpenFile) {
+                # don't allow user to switch to the same -stay_open argfile
+                # because it will result in endless recursion
+                $stayOpen = 2;
+                Warn "Ignoring request to switch to the same -stay_open ARGFILE ($argFile)\n";
+                next;
+            }
+            close STAYOPEN;
+            $stayOpen = 1;  # switch to this -stay_open file
+        }
+        my $fp = ($stayOpen == 1 ? \*STAYOPEN : \*ARGFILE);
+        unless (Open($fp, $argFile)) {
+            unless ($argFile !~ /^\// and Open($fp, "$exeDir/$argFile")) {
+                Error "Error opening arg file $argFile\n";
+                next Command;
+            }
+        }
+        if ($stayOpen == 1) {
+            $stayOpenFile = $argFile;   # remember the name of the file we have open
+            $stayOpenBuff = '';         # initialize buffer for reading this file
+            $stayOpen = 2;
+            $helped = 1;
+            ReadStayOpen(\@ARGV);
+            next;
+        }
+        my (@newArgs, $didBOM);
+        foreach (<ARGFILE>) {
+            # filter Byte Order Mark if it exists from start of UTF-8 text file
+            unless ($didBOM) {
+                s/^\xef\xbb\xbf//;
+                $didBOM = 1;
+            }
+            s/^\s+//; s/[\x0d\x0a]+$//s; # remove leading white space and trailing newline
+            # remove white space before, and single space after '=', '+=', '-=' or '<='
+            s/^(-[-:\w]+#?)\s*([-+<]?=) ?/$1$2/;
+            push @newArgs, $_ unless $_ eq '' or /^#/;
+        }
+        close ARGFILE;
+        unshift @ARGV, @newArgs;
+        next;
+    }
+    /^(-?)(a|duplicates)$/i and $mainTool->Options(Duplicates => ($1 ? 0 : 1)), next;
+    /^arg(s|format)$/i and $argFormat = 1, next;
+    /^b(inary)?$/i and $mainTool->Options(Binary => 1), $binaryOutput = 1,  next;
+    if (/^c(oordFormat)?$/i) {
+        my $fmt = shift;
+        $fmt or Error("Expecting coordinate format for -c option\n"), next Command;
+        $mainTool->Options('CoordFormat', $fmt);
+        next;
+    }
+    if ($a eq 'charset') {
+        my $charset = (@ARGV and $ARGV[0] !~ /^(-|\xe2\x88\x92)/) ? shift : undef;
+        if (not $charset) {
+            $pass or push(@nextPass, '-charset'), next;
+            my %charsets;
+            $charsets{$_} = 1 foreach values %Image::ExifTool::charsetName;
+            PrintTagList('Available character sets', sort keys %charsets);
+            $helped = 1;
+        } elsif ($charset !~ s/^(\w+)=// or lc($1) eq 'exiftool') {
+            $mainTool->Options(Charset => $charset);
+            $utf8 = ($mainTool->Options('Charset') eq 'UTF8');
+        } else {
+            # set internal encoding of specified metadata type
+            my $type = { id3 => 'ID3', iptc => 'IPTC', exif => 'EXIF',
+                         photoshop => 'Photoshop', quicktime => 'QuickTime' }->{lc $1};
+            $type or Warn("Unknown type for -charset option: $1\n"), next;
+            $mainTool->Options("Charset$type" => $charset);
+        }
+        next;
+    }
+    /^config$/i and Warn("Ignored -config option (not first on command line)\n"), shift, next;
+    if (/^csv(\+?=.*)?/i) {
+        my $csvFile = $1;
+        # must process on 2nd pass so -f option is available
+        unless ($pass) {
+            push(@nextPass,"-$_");
+            if ($csvFile) {
+                push @newValues, { SaveCount => ++$saveCount }; # marker to save new values now
+                $csvSaveCount = $saveCount;
+            }
+            next;
+        }
+        if ($csvFile) {
+            $csvFile =~ s/^(\+?=)//;
+            $csvAdd = 2 if $1 eq '+=';
+            $verbose and print "Reading CSV file $csvFile\n";
+            require Image::ExifTool::Import;
+            my $msg = Image::ExifTool::Import::ReadCSV($csvFile, \%database, $forcePrint);
+            $msg and Warn("$msg\n");
+            $isWriting = 1;
+        }
+        $csv = 'CSV';
+        next;
+    }
+    if (/^d$/ or $a eq 'dateformat') {
+        my $fmt = shift;
+        $fmt or Error("Expecting date format for -d option\n"), next Command;
+        $mainTool->Options('DateFormat', $fmt);
+        next;
+    }
+    (/^D$/ or $a eq 'decimal') and $showTagID = 'D', next;
+    /^delete_original(!?)$/i and $deleteOrig = ($1 ? 2 : 1), next;
+    (/^e$/ or $a eq '-composite') and $mainTool->Options(Composite => 0), next;
+    (/^-e$/ or $a eq 'composite') and $mainTool->Options(Composite => 1), next;
+    (/^E$/ or $a eq 'escapehtml') and require Image::ExifTool::HTML and $escapeHTML = 1, next;
+    ($a eq 'ex' or $a eq 'escapexml') and $escapeXML = 1, next;
+    if (/^echo(2)?$/i) {
+        next unless @ARGV;
+        $pass or push(@nextPass, "-$_", shift), next;
+        print {$1 ? \*STDERR : \*STDOUT} shift, "\n";
+        $helped = 1;
+        next;
+    }
+    if (/^(ee|extractembedded)$/i) {
+        $mainTool->Options(ExtractEmbedded => 1);
+        $mainTool->Options(Duplicates => 1);
+        next;
+    }
+    # (-execute handled at top of loop)
+    if (/^-?ext(ension)?$/i) {
+        my $ext = shift;
+        defined $ext or Error("Expecting extension for -ext option\n"), next Command;
+        $ext =~ s/^\.//;    # remove leading '.' if it exists
+        my $flag = /^-/ ? 0 : 1;
+        $filterFlag |= (0x01 << $flag);
+        $filterExt{uc($ext)} = $flag;
+        next;
+    }
+    if (/^f$/ or $a eq 'forceprint') {
+        $forcePrint = 1;
+        $mainTool->Options(MissingTagValue => '-');
+        next;
+    }
+    if (/^F([-+]?\d*)$/ or /^fixbase([-+]?\d*)$/i) {
+        $mainTool->Options(FixBase => $1);
+        next;
+    }
+    if (/^fast(\d*)$/i) {
+        $mainTool->Options(FastScan => (length $1 ? $1 : 1));
+        next;
+    }
+    if ($a eq 'fileorder') {
+        push @fileOrder, shift if @ARGV;
+        next;
+    }
+    $a eq 'globaltimeshift' and $mainTool->Options(GlobalTimeShift => shift), next;
+    if (/^(g)(roupHeadings|roupNames)?([\d:]*)$/i) {
+        $showGroup = $3 || 0;
+        $allGroup = ($2 ? lc($2) eq 'roupnames' : $1 eq 'G');
+        $mainTool->Options(SavePath => 1) if $showGroup =~ /\b5\b/;
+        next;
+    }
+    if ($a eq 'geotag') {
+        my $trkfile = shift;
+        $trkfile or Error("Expecting file name for -geotag option\n"), next Command;
+        # allow wildcards in filename
+        if ($trkfile =~ /[*?]/) {
+            # CORE::glob() splits on white space, so use File::Glob if possible
+            my @trks = eval('require File::Glob') ? File::Glob::bsd_glob($trkfile) : glob($trkfile);
+            @trks or Error("No matching file found for -geotag option\n"), next Command;
+            push @newValues, 'geotag='.shift(@trks) while @trks > 1;
+            $trkfile = pop(@trks);
+        }
+        $_ = "geotag=$trkfile";
+        # (fall through!)
+    }
+    if (/^h$/ or $a eq 'htmlformat') {
+        require Image::ExifTool::HTML;
+        $html = $escapeHTML = 1;
+        $json = $xml = 0;
+        next;
+    }
+    (/^H$/ or $a eq 'hex') and $showTagID = 'H', next;
+    if (/^htmldump([-+]?\d+)?$/i) {
+        $verbose = ($verbose || 0) + 1;
+        $html = 2;
+        $mainTool->Options(HtmlDumpBase => $1) if defined $1;
+        next;
+    }
+    if (/^i(gnore)?$/i) {
+        my $dir = shift;
+        defined $dir or Error("Expecting directory name for -i option\n"), next Command;
+        $ignore{$dir} = 1;
+        next;
+    }
+    if ($a eq 'if') {
+        my $cond = shift;
+        defined $cond or Error("Expecting expression for -if option\n"), next Command;
+        $useMWG = 1 if $cond =~ /\$\{?mwg:/i;
+        if (defined $condition) {
+            $condition .= " and ($cond)";
+        } else {
+            $condition = "($cond)";
+        }
+        next;
+    }
+    if (/^j(son)?(\+?=.*)?$/i) {
+        if ($2) {
+            # must process on 2nd pass because we need -f and -charset options
+            unless ($pass) {
+                push(@nextPass,"-$_");
+                push @newValues, { SaveCount => ++$saveCount }; # marker to save new values now
+                $csvSaveCount = $saveCount;
+                next;
+            }
+            my $jsonFile = $2;
+            $jsonFile =~ s/^(\+?=)//;
+            $csvAdd = 2 if $1 eq '+=';
+            $verbose and print "Reading JSON file $jsonFile\n";
+            my $chset = $mainTool->Options('Charset');
+            require Image::ExifTool::Import;
+            my $msg = Image::ExifTool::Import::ReadJSON($jsonFile, \%database, $forcePrint, $chset);
+            $msg and Warn("$msg\n");
+            $isWriting = 1;
+            $csv = 'JSON';
+        } else {
+            $json = 1;
+            $html = $xml = 0;
+            $mainTool->Options(Duplicates => 1);
+            require Image::ExifTool::XMP;   # for FixUTF8()
+        }
+        next;
+    }
+    /^(k|pause)$/i and $pause = 1, next;
+    (/^l$/ or $a eq 'long') and --$outFormat, next;
+    (/^L$/ or $a eq 'latin') and $utf8 = 0, $mainTool->Options(Charset => 'Latin'), next;
+    if ($a eq 'lang') {
+        my $lang = (@ARGV and $ARGV[0] !~ /^-/) ? shift : undef;
+        if ($lang) {
+            # make lower case and use underline as a separator (ie. 'en_ca')
+            $lang =~ tr/-A-Z/_a-z/;
+            $mainTool->Options(Lang => $lang);
+            next if $lang eq $mainTool->Options('Lang');
+        } else {
+            $pass or push(@nextPass, '-lang'), next;
+        }
+        my $langs = "Available languages:\n";
+        $langs .= "  $_ - $Image::ExifTool::langName{$_}\n" foreach @Image::ExifTool::langs;
+        $langs =~ tr/_/-/;  # display dashes instead of underlines in language codes
+        $langs = $mainTool->Decode($langs, 'UTF8');
+        $langs = Image::ExifTool::HTML::EscapeHTML($langs) if $escapeHTML;
+        $lang and Error("Invalid or unsupported language '$lang'.\n$langs"), next Command;
+        print $langs;
+        $helped = 1;
+        next;
+    }
+    if ($a eq 'listitem') {
+        $listItem = shift;
+        defined $listItem or Warn("Expecting index for -listItem option\n");
+        next;
+    }
+    /^(m|ignoreminorerrors)$/i and $mainTool->Options(IgnoreMinorErrors => 1), next;
+    /^(n|-printconv)$/i and $mainTool->Options(PrintConv => 0), next;
+    /^(-n|printconv)$/i and $mainTool->Options(PrintConv => 1), next;
+    if (/^o(ut)?$/i) {
+        $outOpt = shift;
+        defined $outOpt or Error("Expected output file or directory name for -o option\n"), next Command;
+        CleanFilename($outOpt);
+        next;
+    }
+    /^overwrite_original$/i and $overwriteOrig = 1, next;
+    /^overwrite_original_in_place$/i and $overwriteOrig = 2, next;
+    (/^p$/ or $a eq 'printformat') and LoadPrintFormat(shift), next;
+    (/^P$/ or $a eq 'preserve') and $preserveTime = 1, next;
+    /^password$/i and $mainTool->Options(Password => shift), next;
+    if ($a eq 'progress') {
+        $progress = 0;
+        $verbose = 0 unless defined $verbose;
+        next;
+    }
+    /^q(uiet)?$/i and ++$quiet, next;
+    /^r(ecurse)?$/i and $recurse = 1, next;
+    if ($a eq 'require') { # undocumented, added in version 8.65
+        my $ver = shift;
+        unless (defined $ver and Image::ExifTool::IsFloat($ver)) {
+            Error("Expecting version number for -require option\n");
+            next Command;
+        }
+        unless ($Image::ExifTool::VERSION >= $ver) {
+            Error("Requires ExifTool version $ver or later\n");
+            next Command;
+        }
+        next;
+    }
+    /^restore_original$/i and $deleteOrig = 0, next;
+    (/^S$/ or $a eq 'veryshort') and $outFormat+=2, next;
+    /^s(hort)?(\d*)$/i and $outFormat = $2 eq '' ? $outFormat + 1 : $2, next;
+    /^scanforxmp$/i and $mainTool->Options(ScanForXMP => 1), next;
+    if (/^sep(arator)?$/i) {
+        $listSep = shift;
+        defined $listSep or Error("Expecting list item separator for -sep option\n"), next Command;
+        $mainTool->Options(ListSep => $listSep);
+        $joinLists = 1;
+        # also split when writing values
+        my $listSplit = quotemeta $listSep;
+        # a space in the string matches zero or more whitespace characters
+        $listSplit =~ s/(\\ )+/\\s\*/g;
+        # but a single space alone matches one or more whitespace characters
+        $listSplit = '\\s+' if $listSplit eq '\\s*';
+        $mainTool->Options(ListSplit => $listSplit);
+        next;
+    }
+    /^sort$/i and $sortOpt = 1, next;
+    if ($a eq 'srcfile') {
+        @ARGV or Warn("Expecting FMT for -srcfile option\n"), next;
+        push @srcFmt, shift;
+        next;
+    }
+    if ($a eq 'stay_open') {
+        my $arg = shift;
+        defined $arg or Warn("Expecting argument for -stay_open option\n"), next;
+        if ($arg =~ /^(1|true)$/i) {
+            if (not $stayOpen) {
+                $stayOpen = 1;
+            } elsif ($stayOpen == 2) {
+                $stayOpen = 3;  # chained -stay_open options
+            } else {
+                Warn "-stay_open already active\n";
+            }
+        } elsif ($arg =~ /^(0|false)$/i) {
+            if ($stayOpen >= 2) {
+                # close -stay_open argfile and process arguments up to this point
+                close STAYOPEN;
+                push @ARGV, @moreArgs;
+                undef @moreArgs;
+            } elsif (not $stayOpen) {
+                Warn("-stay_open wasn't active\n");
+            }
+            $stayOpen = 0;
+        } else {
+            Warn "Invalid argument for -stay_open\n";
+        }
+        next;
+    }
+    if (/^(-)?struct$/i) {
+        $structOpt = $1 ? 0 : 1;
+        $mainTool->Options(Struct => $structOpt);
+        # require XMPStruct in case we need to serialize a structure
+        require 'Image/ExifTool/XMPStruct.pl' if $structOpt;
+        next;
+    }
+    /^t(ab)?$/  and $tabFormat = 1, next;
+    if (/^T$/ or $a eq 'table') {
+        $tabFormat = 1; $outFormat+=2; ++$quiet; $forcePrint = 1;
+        $mainTool->Options(MissingTagValue => '-');
+        next;
+    }
+    if (/^(u)(nknown(2)?)?$/i) {
+        my $inc = ($3 or (not $2 and $1 eq 'U')) ? 2 : 1;
+        $mainTool->Options(Unknown => $mainTool->Options('Unknown') + $inc);
+        next;
+    }
+    if ($a eq 'use') {
+        my $module = shift;
+        $module or Error("Expecting module name for -use option\n"), next Command;
+        lc $module eq 'mwg' and $useMWG = 1, next;
+        local $SIG{'__WARN__'} = sub { $evalWarning = $_[0] };
+        unless (eval "require Image::ExifTool::$module" or
+                eval "require $module" or
+                eval "require '$module'")
+        {
+            delete $SIG{'__WARN__'};
+            Error("Error using module $module\n");
+            next Command;
+        }
+        next;
+    }
+    if (/^v(erbose)?(\d*)$/i) {
+        $verbose = ($2 eq '') ? ($verbose || 0) + 1 : $2;
+        next;
+    }
+    if (/^(w|textout)(!?)$/i) {
+        $textOut = shift || Warn("Expecting output extension for -$_ option\n");
+        $textOverwrite = $2;
+        next;
+    }
+    if (/^x$/ or $a eq 'exclude') {
+        my $tag = shift;
+        defined $tag or Error("Expecting tag name for -x option\n"), next Command;
+        $tag =~ s/\ball\b/\*/ig;    # replace 'all' with '*' in tag names
+        if ($setTagsFile) {
+            push @{$setTags{$setTagsFile}}, "-$tag";
+        } else {
+            push @exclude, $tag;
+        }
+        next;
+    }
+    (/^X$/ or $a eq 'xmlformat') and $xml = 1, $html = $json = 0, $mainTool->Options(Duplicates => 1), next;
+    if (/^php$/i) {
+        $json = 2;
+        $html = $xml = 0;
+        $mainTool->Options(Duplicates=>1);
+        next;
+    }
+    /^z(ip)?$/i and $doUnzip = 1, $mainTool->Options(Compress => 1, Compact => 1), next;
+    $_ eq '' and push(@files, '-'), next;   # read STDIN
+    length $_ eq 1 and $_ ne '*' and Error("Unknown option -$_\n"), next Command;
+    if (/^[^<]+(<?)=(.*)/s) {
+        my $val = $2;
+        if ($1 and length($val) and ($val eq '@' or not defined FilenameSPrintf($val))) {
+            # save count of new values before a dynamic value
+            push @newValues, { SaveCount => ++$saveCount };
+        }
+        push @newValues, $_;
+        if (/^mwg:/i) {
+            $useMWG = 1;
+        } elsif (/^([-\w]+:)*(filename|directory)\b/i) {
+            $doSetFileName = 1;
+        } elsif (/^([-\w]+:)*(geotag|geotime)\b/i) {
+            if (lc $2 eq 'geotag') {
+                if ((not defined $addGeotime or $addGeotime) and length $val) {
+                    $addGeotime = ($1 || '') . 'Geotime<DateTimeOriginal';
+                }
+            } else {
+                $addGeotime = '';
+            }
+        }
+    } else {
+        # assume '-tagsFromFile @' if tags are being redirected
+        # and -tagsFromFile hasn't already been specified
+        AddSetTagsFile($setTagsFile = '@') if not $setTagsFile and /(<|>)/;
+        if ($setTagsFile) {
+            push @{$setTags{$setTagsFile}}, $_;
+            if (/>/) {
+                $useMWG = 1 if /^(.*>\s*)?mwg:/si;
+                if (/\b(filename|directory)#?$/i) {
+                    $doSetFileName = 1;
+                } elsif (/\bgeotime#?$/i) {
+                    $addGeotime = '';
+                }
+            } else {
+                $useMWG = 1 if /^([^<]+<\s*(.*\$\{?)?)?mwg:/si;
+                if (/^([-\w]+:)*(filename|directory)\b/i) {
+                    $doSetFileName = 1;
+                } elsif (/^([-\w]+:)*geotime\b/i) {
+                    $addGeotime = '';
+                }
+            }
+        } elsif (/^-(.*)/) {
+            push @exclude, $1;
+        } else {
+            push @tags, $_;
+        }
+    }
+  } elsif ($doGlob and /[*?]/) {
+    # glob each filespec if necessary - MK/20061010
+    push @files, File::Glob::bsd_glob($_);
+    $doGlob = 2;
+  } else {
+    push @files, $_;
+  }
+}
+
+# change default EXIF string encoding if MWG used
+if ($useMWG and not defined $mainTool->Options('CharsetEXIF')) {
+    $mainTool->Options(CharsetEXIF => 'UTF8');
+}
+
+# print help
+unless ((@tags and not $outOpt) or @files or @newValues) {
+    if ($doGlob and $doGlob == 2) {
+        Warn "No matching files\n";
+        $rtnVal = 1;
+        next;
+    }
+    if ($outOpt) {
+        Warn "Nothing to write\n";
+        $rtnVal = 1;
+        next;
+    }
+    unless ($helped) {
+        # catch warnings if we have problems running perldoc
+        local $SIG{'__WARN__'} = sub { $evalWarning = $_[0] };
+        my $dummy = \*SAVEERR;  # avoid "used only once" warning
+        unless ($^O eq 'os2') {
+            open SAVEERR, ">&STDERR";
+            open STDERR, '>/dev/null';
+        }
+        if (system('perldoc',$0)) {
+            print "Syntax:  exiftool [OPTIONS] FILE\n\n";
+            print "Consult the exiftool documentation for a full list of options.\n";
+        }
+        unless ($^O eq 'os2') {
+            close STDERR;
+            open STDERR, '>&SAVEERR';
+        }
+    }
+    next;
+}
+
+# do sanity check on -delete_original and -restore_original
+if (defined $deleteOrig and (@newValues or @tags)) {
+    if (not @newValues) {
+        my $verb = $deleteOrig ? 'deleting' : 'restoring from';
+        Warn "Can't specify tags when $verb originals\n";
+    } elsif ($deleteOrig) {
+        Warn "Can't use -delete_original when writing.\n";
+        Warn "Maybe you meant -overwrite_original ?\n";
+    } else {
+        Warn "It makes no sense to use -restore_original when writing\n";
+    }
+    $rtnVal = 1;
+    next;
+}
+
+if ($overwriteOrig > 1 and $outOpt) {
+    Warn "Can't overwrite in place when -o option is used\n";
+    $rtnVal = 1;
+    next;
+}
+
+if ($escapeHTML or $json) {
+    # must be UTF8 for HTML conversion and JSON output
+    $mainTool->Options(Charset => 'UTF8');
+    # use Escape option to do our HTML escaping unless XML output
+    $mainTool->Options(Escape => 'HTML') if $escapeHTML and not $xml;
+} elsif ($escapeXML and not $xml) {
+    $mainTool->Options(Escape => 'XML');
+}
+
+# set sort option
+if ($sortOpt) {
+    # (note that -csv sorts alphabetically by default anyway if more than 1 file)
+    my $sort = ($outFormat > 0 or $xml or $json or $csv) ? 'Tag' : 'Descr';
+    $mainTool->Options(Sort => $sort, Sort2 => $sort);
+}
+
+# set up for RDF/XML, JSON and PHP output formats
+if ($xml) {
+    require Image::ExifTool::XMP;   # for EscapeXML()
+    my $charset = $mainTool->Options('Charset');
+    # standard XML encoding names for supported Charset settings
+    # (ref http://www.iana.org/assignments/character-sets)
+    my %encoding = (
+        UTF8     => 'UTF-8',
+        Latin    => 'windows-1252',
+        Latin2   => 'windows-1250',
+        Cyrillic => 'windows-1251',
+        Greek    => 'windows-1253',
+        Turkish  => 'windows-1254',
+        Hebrew   => 'windows-1255',
+        Arabic   => 'windows-1256',
+        Baltic   => 'windows-1257',
+        Vietnam  => 'windows-1258',
+        MacRoman => 'macintosh',
+    );
+    # switch to UTF-8 if we don't have a standard encoding name
+    unless ($encoding{$charset}) {
+        $charset = 'UTF8';
+        $mainTool->Options(Charset => $charset);
+    }
+    # set file header/trailer for XML output
+    $fileHeader = "<?xml version='1.0' encoding='$encoding{$charset}'?>\n" .
+                  "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\n";
+    $fileTrailer = "</rdf:RDF>\n";
+    # extract as a list unless short output format
+    $joinLists = 1 if $outFormat > 0;
+    $mainTool->Options(List => 1) unless $joinLists;
+    $showGroup = $allGroup = 1;         # always show group 1
+    # set binaryOutput flag to 0 or undef (0 = output encoded binary in XML)
+    $binaryOutput = ($outFormat > 0 ? undef : 0) if $binaryOutput;
+    $showTagID = 'D' if $tabFormat and not $showTagID;
+} elsif ($json) {
+    if ($json == 1) { # JSON
+        $fileHeader = '[';
+        $fileTrailer = "]\n";
+        undef $binaryOutput; # can't currently use -b with -json
+    } else { # PHP
+        $fileHeader = 'Array(';
+        $fileTrailer = ");\n";
+        # allow binary output in a text-mode file when -php and -b used together
+        # (this works because PHP strings are simple arrays of bytes, and CR/LF
+        #  won't be messed up in the text mode output because they are converted
+        #  to escape sequences in the strings)
+        $binaryOutput = 0 if $binaryOutput;
+    }
+    $mainTool->Options(List => 1) unless $joinLists;
+    $mainTool->Options(Duplicates => 0) unless defined $showGroup;
+} elsif ($structOpt) {
+    $mainTool->Options(List => 1);
+} else {
+    $joinLists = 1;     # join lists for all other unstructured output formats
+}
+
+if ($argFormat) {
+    $outFormat = 3;
+    $allGroup = 1 if defined $showGroup;
+}
+
+# change to forward slashes if necessary in all filenames (like CleanFilename)
+if ($hasBackslash{$^O}) {
+    tr/\\/\// foreach @files;
+}
+
+# can't do anything if no file specified
+unless (@files) {
+    unless ($outOpt) {
+        Warn "No file specified\n";
+        $rtnVal = 1;
+        next;
+    }
+    push @files, '';    # create file from nothing
+}
+
+# set Verbose and HtmlDump options
+if ($verbose) {
+    $disableOutput = 1 unless @tags or @exclude;
+    undef $binaryOutput;    # disable conflicting option
+    if ($html) {
+        $html = 2;    # flag for html dump
+        $mainTool->Options(HtmlDump => $verbose);
+    } else {
+        $mainTool->Options(Verbose => $verbose);
+    }
+} elsif (defined $verbose) {
+    # auto-flush output when -v0 is used
+    require FileHandle;
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
+}
+
+# validate all tags we're writing
+my $needSave = 1;
+if (@newValues) {
+    # assume -geotime value if -geotag specified without -geotime
+    if ($addGeotime) {
+        AddSetTagsFile($setTagsFile = '@') unless $setTagsFile and $setTagsFile eq '@';
+        push @{$setTags{$setTagsFile}}, $addGeotime;
+        $verbose and print qq{Argument "-$addGeotime" is assumed\n};
+    }
+    my %setTagsIndex;
+    # add/delete option lookup
+    my %addDelOpt = ( '+' => 'AddValue', '-' => 'DelValue', "\xe2\x88\x92" => 'DelValue' );
+    $saveCount = 0;
+    foreach (@newValues) {
+        if (ref $_ eq 'HASH') {
+            # save new values now if we stored a "SaveCount" marker
+            if ($$_{SaveCount}) {
+                $saveCount = $mainTool->SaveNewValues();
+                $needSave = 0;
+                # insert marker to load values from CSV file now if this was the CSV file
+                push @dynamicFiles, \$csv if $$_{SaveCount} == $csvSaveCount;
+            }
+            next;
+        }
+        /(.*?)=(.*)/s or next;
+        my ($tag, $newVal) = ($1, $2);
+        $tag =~ s/\ball\b/\*/ig;    # replace 'all' with '*' in tag names
+        $newVal eq '' and undef $newVal;    # undefined to delete tag
+        if ($tag =~ /^(All)?TagsFromFile$/i) {
+            defined $newVal or Error("Need file name for -tagsFromFile\n"), next Command;
+            ++$isWriting;
+            if ($newVal eq '@' or not defined FilenameSPrintf($newVal)) {
+                push @dynamicFiles, $newVal;
+                next;   # set tags from dynamic file later
+            }
+            unless (-e $newVal) {
+                Warn "File '$newVal' does not exist for -tagsFromFile option\n";
+                $rtnVal = 1;
+                next Command;
+            }
+            my $setTags = $setTags{$newVal};
+            # do we have multiple -tagsFromFile options with this file?
+            if ($setTagsList{$newVal}) {
+                # use the tags set in the i-th occurrence
+                my $i = $setTagsIndex{$newVal} || 0;
+                $setTagsIndex{$newVal} = $i + 1;
+                $setTags = $setTagsList{$newVal}[$i] if $setTagsList{$newVal}[$i];
+            }
+            # set specified tags from this file
+            unless (DoSetFromFile($mainTool, $newVal, $setTags)) {
+                $rtnVal = 1;
+                next Command;
+            }
+            $needSave = 1;
+            next;
+        }
+        my %opts = (
+            Protected => 1, # allow writing of 'unsafe' tags
+            Shift => 0,     # shift values if possible instead of adding/deleting
+        );
+        if ($tag =~ s/<// and defined $newVal) {
+            if (defined FilenameSPrintf($newVal)) {
+                SlurpFile($newVal, \$newVal) or next;
+            } else {
+                $tag =~ s/([-+]|\xe2\x88\x92)$// and $opts{$addDelOpt{$1}} = 1;
+                # verify that this tag can be written
+                my $result = Image::ExifTool::IsWritable($tag);
+                if ($result) {
+                    $opts{ProtectSaved} = $saveCount;   # protect new values set after this
+                    # add to list of dynamic tag values
+                    push @dynamicFiles, [ $tag, $newVal, \%opts ];
+                    ++$isWriting;
+                } elsif (defined $result) {
+                    Warn "Tag '$tag' is not writable\n";
+                } else {
+                    Warn "Tag '$tag' does not exist\n";
+                }
+                next;
+            }
+        }
+        if ($tag =~ s/([-+]|\xe2\x88\x92)$//) {
+            $opts{$addDelOpt{$1}} = 1;  # set AddValue or DelValue option
+            # set $newVal to '' if deleting nothing
+            $newVal = '' if $1 eq '-' and not defined $newVal;
+        }
+        my ($rtn, $wrn) = $mainTool->SetNewValue($tag, $newVal, %opts);
+        $needSave = 1;
+        ++$isWriting if $rtn;
+        $wrn and Warn "Warning: $wrn\n";
+    }
+    # exclude specified tags
+    foreach (@exclude) {
+        $mainTool->SetNewValue($_, undef, Replace => 2);
+        $needSave = 1;
+    }
+    unless ($isWriting or $outOpt or @tags) {
+        Warn "Nothing to do.\n";
+        $rtnVal = 1;
+        next;
+    }
+} elsif (grep /^(\*:)?\*$/, @exclude) {
+    Warn "All tags excluded -- nothing to do.\n";
+    $rtnVal = 1;
+    next;
+}
+if ($isWriting and @tags and not $outOpt) {
+    my ($tg, $s) = @tags > 1 ? ("$tags[0] ...", 's') : ($tags[0], '');
+    Warn "Ignored superfluous tag name$s or invalid option$s: -$tg\n";
+}
+# save current state of new values if setting values from target file
+# or if we may be translating to a different format
+$mainTool->SaveNewValues() if $outOpt or (@dynamicFiles and $needSave);
+
+$multiFile = 1 if @files > 1;
+@exclude and $mainTool->Options(Exclude => \@exclude);
+
+undef $binaryOutput if $html;
+
+if ($binaryOutput) {
+    $outFormat = 99;    # shortest possible output format
+    $mainTool->Options(PrintConv => 0);
+    unless ($textOut or $binaryStdout) {
+        binmode(STDOUT);
+        $binaryStdout = 1;
+    }
+    # disable conflicting options
+    undef $showGroup;
+}
+
+# sort by groups to look nicer depending on options
+if (defined $showGroup and not (@tags and $allGroup)) {
+    $mainTool->Options(Sort => "Group$showGroup");
+}
+
+if (defined $textOut) {
+    CleanFilename($textOut);  # make all forward slashes
+    # add '.' before output extension if necessary
+    $textOut = ".$textOut" unless $textOut =~ /[.%]/;
+}
+
+# determine if we should scan for only writable files
+if ($outOpt) {
+    my $type = GetFileType($outOpt);
+    if ($type) {
+        unless (CanWrite($type)) {
+            Warn "Can't write $type files\n";
+            $rtnVal = 1;
+            next;
+        }
+        $scanWritable = $type unless CanCreate($type);
+    } else {
+        $scanWritable = 1;
+    }
+    $isWriting = 1;     # set writing flag
+} elsif ($isWriting or defined $deleteOrig) {
+    $scanWritable = 1;
+}
+
+# set flag to fix description lengths if necessary
+$fixLen = ($utf8 and $mainTool->Options('Lang') ne 'en' and eval 'require Encode');
+
+# sort input files if specified
+if (@fileOrder) {
+    my @allFiles;
+    ProcessFiles(undef, \@allFiles);
+    my $sortTool = new Image::ExifTool;
+    $sortTool->Options(PrintConv => $mainTool->Options('PrintConv'));
+    $sortTool->Options(Duplicates => 0);
+    my (%sortBy, %isFloat, @rev, $file);
+    # save reverse sort flags
+    push @rev, (s/^-// ? 1 : 0) foreach @fileOrder;
+    foreach $file (@allFiles) {
+        my @tags;
+        my $info = $sortTool->ImageInfo($file, @fileOrder, \@tags);
+        # get values of all tags (or '~' to sort last if not defined)
+        foreach (@tags) {
+            $_ = $$info{$_};
+            defined $_ or $_ = '~', next;
+            $isFloat{$_} = 1 if /^[+-]?(?=\d|\.\d)\d*(\.\d*)?([Ee]([+-]?\d+))?$/;
+        }
+        $sortBy{$file} = \@tags;    # save tag values for each file
+    }
+    # sort in specified order
+    @files = sort {
+        my ($i, $cmp);
+        for ($i=0; $i<@rev; ++$i) {
+            my $u = $sortBy{$a}[$i];
+            my $v = $sortBy{$b}[$i];
+            if (not $isFloat{$u} and not $isFloat{$v}) {
+                $cmp = $u cmp $v;               # alphabetically
+            } elsif ($isFloat{$u} and $isFloat{$v}) {
+                $cmp = $u <=> $v;               # numerically
+            } else {
+                $cmp = $isFloat{$u} ? -1 : 1;   # numbers first
+            }
+            return $rev[$i] ? -$cmp : $cmp if $cmp;
+        }
+        return $a cmp $b;   # default to sort by name
+    } @allFiles;
+} elsif (defined $progress) {
+    # expand FILE argument to count the number of files to process
+    my @allFiles;
+    ProcessFiles(undef, \@allFiles);
+    @files = @allFiles;
+}
+# set file count for progress message
+$progressMax = scalar @files if defined $progress;
+
+# store duplicate database information under canonical filenames
+my @dbKeys = keys %database;
+if (@dbKeys and require Cwd) {
+    foreach (@dbKeys) {
+        my $canonFile = Cwd::abs_path($_);
+        if (defined $canonFile) {
+            $database{$canonFile} = $database{$_} unless $database{$canonFile};
+        } else {
+            # (may happen on Mac if the filename encoding is incorrect in the database)
+            Warn "Error generating canonical filename for $_\n";
+        }
+    }
+}
+
+# process all specified files
+ProcessFiles($mainTool);
+
+if ($filtered and not $validFile) {
+    Warn "No file with specified extension\n";
+    $rtnVal = 1;
+}
+
+# print CSV information if necessary
+PrintCSV() if $csv and not $isWriting;
+
+# print file trailer if necessary
+print $fileTrailer if $fileTrailer and not $textOut and not $fileHeader;
+
+if (defined $deleteOrig) {
+
+    # print summary and delete requested files
+    unless ($quiet) {
+        printf "%5d directories scanned\n", $countDir if $countDir;
+        printf "%5d directories created\n", $countNewDir if $countNewDir;
+        printf "%5d files failed condition\n", $countFailed if $countFailed;
+        printf "%5d image files found\n", $count;
+    }
+    if (@delFiles) {
+        # verify deletion unless "-delete_original!" was specified
+        if ($deleteOrig == 1) {
+            printf '%5d originals will be deleted!  Are you sure [y/n]? ', scalar(@delFiles);
+            my $response = <STDIN>;
+            unless ($response =~ /^(y|yes)\s*$/i) {
+                Warn "Originals not deleted.\n";
+                next;
+            }
+        }
+        $countGoodWr = unlink @delFiles;
+        $countBad = scalar(@delFiles) - $countGoodWr;
+    }
+    if ($quiet) {
+        # no more messages
+    } elsif ($count and not $countGoodWr and not $countBad) {
+        printf "%5d original files found\n", $countGoodWr;
+    } elsif ($deleteOrig) {
+        printf "%5d original files deleted\n", $countGoodWr if $count;
+        printf "%5d originals not deleted due to errors\n", $countBad if $countBad;
+    } else {
+        printf "%5d image files restored from original\n", $countGoodWr if $count;
+        printf "%5d files not restored due to errors\n", $countBad if $countBad;
+    }
+
+} elsif (not $binaryStdout and not $quiet) {
+
+    # print summary
+    my $tot = $count + $countBad;
+    my $totWr = $countGoodWr + $countBadWr + $countSameWr + $countCopyWr +
+                $countGoodCr + $countBadCr;
+    if ($countDir or $totWr or $countFailed or $tot > 1 or $textOut) {
+        my $o = (($html or $json or $xml or %printFmt or $csv) and not $textOut) ? \*STDERR : \*STDOUT;
+        printf($o "%5d directories scanned\n", $countDir) if $countDir;
+        printf($o "%5d directories created\n", $countNewDir) if $countNewDir;
+        printf($o "%5d files failed condition\n", $countFailed) if $countFailed;
+        printf($o "%5d image files created\n", $countGoodCr) if $countGoodCr;
+        printf($o "%5d image files updated\n", $countGoodWr) if $totWr - $countGoodCr - $countBadCr - $countCopyWr;
+        printf($o "%5d image files unchanged\n", $countSameWr) if $countSameWr;
+        printf($o "%5d image files copied\n", $countCopyWr) if $countCopyWr;
+        printf($o "%5d files weren't updated due to errors\n", $countBadWr) if $countBadWr;
+        printf($o "%5d files weren't created due to errors\n", $countBadCr) if $countBadCr;
+        printf($o "%5d image files read\n", $count) if $tot>1 or ($countDir and not $totWr);
+        printf($o "%5d files could not be read\n", $countBad) if $countBad;
+        printf($o "%5d output files created\n", $countCreated) if $textOut;
+    }
+}
+
+# set error status if we had any errors or if all files failed the "-if" condition
+$rtnVal = 1 if $countBadWr or $countBadCr or $countBad or ($countFailed and not $count);
+
+# last ditch effort to preserve filemodifydate
+PreserveTime() if %preserveTime;
+
+} # end "Command" loop ........................................................
+
+close STAYOPEN if $stayOpen >= 2;
+
+Exit $rtnVal;   # all done
+
+
+#------------------------------------------------------------------------------
+# Get image information from EXIF data in file
+# Inputs: 0) ExifTool object reference, 1) file name
+sub GetImageInfo($$)
+{
+    my ($exifTool, $orig) = @_;
+    my (@foundTags, $info, $file, $ind);
+
+    # determine the name of the source file based on the original input file name
+    if (@srcFmt) {
+        my ($fmt, $first);
+        foreach $fmt (@srcFmt) {
+            $file = $fmt eq '@' ? $orig : FilenameSPrintf($fmt, $orig);
+            # use this file if it exists
+            -e $file and undef($first), last;
+            $verbose and print "Source file $file does not exist\n";
+            $first = $file unless defined $first;
+        }
+        $file = $first if defined $first;
+    } else {
+        $file = $orig;
+    }
+    printf("%s:", $file);
+
+    my $pipe = $file;
+    if ($doUnzip) {
+        # pipe through gzip or bzip2 if necessary
+        if ($file =~ /\.gz$/i) {
+            $pipe = qq{gzip -dc "$file" |};
+        } elsif ($file =~ /\.bz2$/i) {
+            $pipe = qq{bzip2 -dc "$file" |};
+        }
+    }
+    # evaluate -if expression for conditional processing
+    if (defined $condition) {
+        unless ($file eq '-' or -e $file) {
+            Warn "File not found: $file\n";
+            ++$countBad;
+            return;
+        }
+        # catch run time errors as well as compile errors
+        undef $evalWarning;
+        local $SIG{'__WARN__'} = sub { $evalWarning = $_[0] };
+
+        my %info;
+        # extract information and build expression for evaluation
+        my $opts = { Duplicates => 1, Verbose => 0, HtmlDump => 0 };
+        # return all tags but explicitly mention tags on command line so
+        # requested images will generate the appropriate warnings
+        @foundTags = ('*', @tags) if @tags;
+        $info = $exifTool->ImageInfo($pipe, \@foundTags, $opts);
+        my $cond = $exifTool->InsertTagValues(\@foundTags, $condition, \%info);
+
+        #### eval "-if" condition (%info)
+        my $result = eval $cond;
+
+        $@ and $evalWarning = $@;
+        if ($evalWarning) {
+            # fail condition if warning is issued
+            undef $result;
+            if ($verbose) {
+                chomp $evalWarning;
+                $evalWarning =~ s/ at \(eval .*//s;
+                delete $SIG{'__WARN__'};
+                Warn "Condition: $evalWarning - $file\n";
+            }
+        }
+        unless ($result) {
+            $verbose and print "-------- $file (failed condition)$progStr\n";
+            ++$countFailed;
+            return;
+        }
+        # can't make use of $info if verbose because we must reprocess
+        # the file anyway to generate the verbose output
+        undef $info if $verbose;
+    }
+    if (defined $deleteOrig) {
+        #print "======== $file$progStr\n" if defined $verbose;
+        ++$count;
+        my $original = "${file}_original";
+        -e $original or return;
+        if ($deleteOrig) {
+            $verbose and print "Scheduled for deletion: $original\n";
+            push @delFiles, $original;
+        } elsif (rename $original, $file) {
+            $verbose and print "Restored from $original\n";
+            ++$countGoodWr;
+        } else {
+            Warn "Error renaming $original\n";
+            ++$countBad;
+        }
+        return;
+    }
+    my $lineCount = 0;
+    my ($fp, $outfile);
+    if ($textOut and $verbose) {
+        ($fp, $outfile) = OpenOutputFile($orig);
+        $fp or ++$countBad, return;
+        $tmpText = $outfile;    # deletes file if we exit prematurely
+        $exifTool->Options(TextOut => $fp);
+    }
+
+    if ($isWriting) {
+        #print "======== $file$progStr\n" if defined $verbose;
+        SetImageInfo($exifTool, $file, $orig);
+        $info = $exifTool->GetInfo('Warning', 'Error');
+        PrintErrors($exifTool, $info, $file);
+        # close output text file if necessary
+        if ($outfile) {
+            undef $tmpText;
+            close($fp);
+            $exifTool->Options(TextOut => \*STDOUT);
+            if ($info->{Error}) {
+                unlink $outfile;    # erase bad file
+            } else {
+                ++$countCreated;
+            }
+        }
+        return;
+    }
+
+    # extract information from this file
+    unless ($file eq '-' or -e $file) {
+        Warn "File not found: $file\n";
+        $outfile and close($fp), undef($tmpText), unlink($outfile);
+        ++$countBad;
+        return;
+    }
+    # print file/progress message
+    my $o;
+    unless ($binaryOutput or $textOut or %printFmt or $html > 1 or $csv) {
+        if ($html) {
+            require Image::ExifTool::HTML;
+            my $f = Image::ExifTool::HTML::EscapeHTML($file);
+            print "<!-- $f -->\n";
+        } elsif (not ($json or $xml)) {
+            $o = \*STDOUT if ($multiFile and not $quiet) or $progress;
+        }
+    }
+    $o = \*STDERR if $progress and not $o;
+    #$o and print $o "======== $file$progStr\n";
+    if ($info) {
+        # get the information we wanted
+        if (@tags and not %printFmt) {
+            @foundTags = @tags;
+            $info = $exifTool->GetInfo(\@foundTags);
+        }
+    } else {
+        # request specified tags unless using print format option
+        my $oldDups = $exifTool->Options('Duplicates');
+        if (%printFmt) {
+            $exifTool->Options(Duplicates => 1);
+        } else {
+            @foundTags = @tags;
+        }
+        # extract the information
+        $info = $exifTool->ImageInfo($pipe, \@foundTags);
+        $exifTool->Options(Duplicates => $oldDups);
+    }
+    # all done now if we already wrote output text file (ie. verbose option)
+    if ($fp) {
+        if ($outfile) {
+            $exifTool->Options(TextOut => \*STDOUT);
+            undef $tmpText;
+            if ($info->{Error}) {
+                close($fp);
+                unlink $outfile;    # erase bad file
+            } else {
+                ++$lineCount;       # output text file (likely) is not empty
+            }
+        }
+        if ($info->{Error}) {
+            Warn "Error: $info->{Error} - $file\n";
+            ++$countBad;
+            return;
+        }
+    }
+
+    # print warnings to stderr if using binary output
+    # (because we are likely ignoring them and piping stdout to file)
+    # or if there is none of the requested information available
+    if ($binaryOutput or not %$info) {
+        my $errs = $exifTool->GetInfo('Warning', 'Error');
+        PrintErrors($exifTool, $errs, $file);
+    }
+
+    # open output file (or stdout if no output file) if not done already
+    unless ($fp) {
+        ($fp, $outfile) = OpenOutputFile($orig);
+        $fp or ++$countBad, return;
+    }
+
+    # print the results for this file
+    if (%printFmt) {
+        # output using print format file (-p) option
+        my ($type, $doc, $grp);
+        undef $fileTrailer;
+        # repeat for each embedded document if necessary
+        my $lastDoc = $exifTool->Options('ExtractEmbedded') ? $exifTool->{DOC_COUNT} : 0;
+        foreach $type ('HEAD', 'BODY', 'TAIL') {
+            my $prf = $printFmt{$type} or next;
+            for ($doc=0; $doc<=$lastDoc; ++$doc) {
+                if ($lastDoc) {
+                    if ($doc) {
+                        last unless $type eq 'BODY'; # only repeat BODY lines
+                        $grp = "Doc$doc:";
+                    } else {
+                        $grp = 'Main:';
+                    }
+                    # change tag groups to print next document by adding "Main:" or "Doc#:"
+                    # to all tags which don't already start with a family 3 group name
+                    $prf = [ @{$printFmt{$type}} ];
+                    s/((^|[^\$])(\$\$)*\$\{?)((?!(Main|Doc\d+):)[\w])/$1$grp$4/ig foreach @$prf;
+                }
+                my @lines;
+                foreach (@$prf) {
+                    my $line = $exifTool->InsertTagValues(\@foundTags, $_, 'Warn');
+                    push @lines, $line if defined $line;
+                }
+                $lineCount += scalar @lines;
+                if ($type eq 'TAIL') {
+                    $fileTrailer = '' unless defined $fileTrailer;
+                    $fileTrailer .= join '', @lines;
+                } elsif (@lines) {
+                    print $fp @lines;
+                }
+            }
+        }
+        delete $printFmt{HEAD} unless $outfile; # print header only once per output file
+        my $errs = $exifTool->GetInfo('Warning', 'Error');
+        PrintErrors($exifTool, $errs, $file);
+    } elsif (not $disableOutput) {
+        # print file header (only once)
+        if ($fileHeader) {
+            print $fp $fileHeader;
+            undef $fileHeader unless $textOut;
+        }
+        my ($tag, $line, %noDups, %csvInfo, $bra, $ket, $sep);
+        if ($html) {
+            print $fp "<table>\n";
+        } elsif ($xml) {
+            my $f = $file;
+            CleanXML(\$f);
+            print $fp "\n<rdf:Description rdf:about='$f'";
+            print $fp "\n  xmlns:et='http://ns.exiftool.ca/1.0/'";
+            print $fp " et:toolkit='Image::ExifTool $Image::ExifTool::VERSION'";
+            # define namespaces for all tag groups
+            my %groups;
+            foreach $tag (@foundTags) {
+                my ($grp, $grp1) = $exifTool->GetGroup($tag);
+                unless ($grp1) {
+                    next unless $forcePrint;
+                    $grp = $grp1 = 'Unknown';
+                }
+                next if $groups{$grp1};
+                $groups{$grp1} = 1;
+                # include family 0 and 1 groups in URI except for internal tags
+                # (this will put internal tags in the "XML" group on readback)
+                $grp .= "/$grp1" unless $grp eq $grp1 and
+                                        $grp =~ /^(ExifTool|File|Composite|Unknown)$/;
+                print $fp "\n  xmlns:$grp1='http://ns.exiftool.ca/$grp/1.0/'";
+            }
+            print $fp '>' if $outFormat < 1; # finish rdf:Description token unless short format
+            $ind = $outFormat >= 0 ? ' ' : '   ';
+        } elsif ($json) {
+            # set delimiters for JSON or PHP output
+            ($bra, $ket, $sep) = $json == 1 ? ('{','}',':') : ('Array(',')',' =>');
+            print $fp ",\n" if $comma;
+            print $fp qq($bra\n  "SourceFile"$sep ), EscapeJSON($file, 1);
+            $comma = 1;
+            $ind = (defined $showGroup and not $allGroup) ? '    ' : '  ';
+        } elsif ($csv) {
+            $database{$file} = \%csvInfo;
+            push @csvFiles, $file;
+        }
+        # suppress duplicates manually in JSON and short XML output
+        my $noDups = ($json or ($xml and $outFormat > 0));
+        my $printConv = $mainTool->Options('PrintConv');
+        my $lastGroup = '';
+        foreach $tag (@foundTags) {
+            my $tagName = GetTagName($tag);
+            my $group;
+            # make sure this tag has a value
+            my $val = $$info{$tag};
+            if (ref $val) {
+                if (defined $binaryOutput and not $binaryOutput) { # happens with -X -b or -php -b
+                    # avoid extracting Protected binary tags (ie. data blocks) [insider information]
+                    next if $exifTool->{TAG_INFO}{$tag}{Protected};
+                }
+                $val = ConvertBinary($val); # convert SCALAR references
+                if ($structOpt) {
+                    # serialize structure if necessary
+                    $val = Image::ExifTool::XMP::SerializeStruct($val) unless $xml or $json;
+                } elsif (ref $val eq 'ARRAY') {
+                    if (defined $listItem) {
+                        # take only the specified item
+                        $val = $$val[$listItem];
+                    # join arrays of simple values (with newlines for binary output)
+                    } elsif ($binaryOutput) {
+                        $val = join "\n", @$val;
+                    } elsif ($joinLists) {
+                        $val = join $listSep, @$val;
+                    }
+                }
+            }
+            if (not defined $val) {
+                # ignore tags that weren't found unless necessary
+                next if $binaryOutput;
+                if ($forcePrint) {
+                    $val = '-';     # forced to print all tag values
+                } elsif (not $csv) {
+                    next;
+                }
+            }
+            if (defined $showGroup) {
+                $group = $exifTool->GetGroup($tag, $showGroup);
+                # look ahead to see if this tag may suppress a priority tag in
+                # the same group, and if so suppress this tag instead
+                next if $noDups and $tag =~ /^([-\w+]( #)?)\(/ and defined $$info{$1} and
+                        $group eq $exifTool->GetGroup($1, $showGroup);
+                $group = 'Unknown' if not $group and ($xml or $json);
+                unless ($allGroup or $csv) {
+                    if ($lastGroup ne $group) {
+                        if ($html) {
+                            my $cols = 1;
+                            ++$cols if $outFormat==0 or $outFormat==1;
+                            ++$cols if $showTagID;
+                            print $fp "<tr><td colspan=$cols bgcolor='#dddddd'>$group</td></tr>\n";
+                        } elsif ($json) {
+                            print $fp "\n  $ket" if $lastGroup;
+                            print $fp ',' if $lastGroup or $comma;
+                            print $fp qq(\n  "$group"$sep $bra);
+                            undef $comma;
+                            undef %noDups;  # allow duplicate names in different groups
+                        } else {
+                            print $fp "---- $group ----\n";
+                        }
+                        $lastGroup = $group;
+                    }
+                    undef $group;   # undefine so we don't print it below
+                }
+            }
+
+            ++$lineCount;           # we are printing something meaningful
+
+            # write binary output
+            if ($binaryOutput) {
+                print $fp $val;
+                next;
+            }
+            # save information for CSV output
+            if ($csv) {
+                my $t = $group ? "$group:$tagName" : $tagName;
+                $t .= '#' if $tag =~ /#/;   # add ValueConv "#" suffix if used
+                # (tag-name case may be different if some tags don't exist
+                # in a file, so all logic must use lower-case tag names)
+                my $lcTag = lc $t;
+                # override existing entry only if top priority
+                next if defined $csvInfo{$lcTag} and $tag =~ /\(/;
+                $csvInfo{$lcTag} = $val;
+                if (defined $csvTags{$lcTag}) {
+                    # overwrite with actual extracted tag name
+                    # (note: can't check "if defined $val" here because -f may be used)
+                    $csvTags{$lcTag} = $t if defined $$info{$tag};
+                } else {
+                    # (don't save unextracted tag name unless -f was used)
+                    $csvTags{$lcTag} = defined($val) ? $t : '';
+                    if (@csvFiles == 1) {
+                        push @csvTags, $lcTag; # save order of tags for first file
+                    } elsif (@csvTags) {
+                        undef @csvTags;
+                    }
+                }
+                next;
+            }
+
+            # get description if we need it (use tag name if $outFormat > 0)
+            my $desc = $outFormat > 0 ? $tagName : $exifTool->GetDescription($tag);
+
+            if ($xml) {
+                # RDF/XML output format
+                my $tok = "$group:$tagName";
+                # manually un-do CR/LF conversion in Windows because output
+                # is in text mode, which will re-convert newlines to CR/LF
+                $isCRLF and $val =~ s/\x0d\x0a/\x0a/g;
+                if ($outFormat > 0) {
+                    if ($structOpt and ref $val) {
+                        $val = Image::ExifTool::XMP::SerializeStruct($val);
+                    }
+                    if ($escapeHTML) {
+                        $val =~ tr/\0-\x08\x0b\x0c\x0e-\x1f/./;
+                        Image::ExifTool::XMP::FixUTF8(\$val) if $utf8;
+                        $val = Image::ExifTool::HTML::EscapeHTML($val);
+                    } else {
+                        CleanXML(\$val);
+                    }
+                    unless ($noDups{$tok}) {
+                        print $fp "\n $tok='$val'";
+                        # XML does not allow duplicate attributes
+                        $noDups{$tok} = 1;
+                    }
+                    next;
+                }
+                my ($xtra, $valNum, $descClose);
+                if ($showTagID) {
+                    my ($id, $lang) = $exifTool->GetTagID($tag);
+                    if ($id =~ /^\d+$/) {
+                        $id = sprintf("0x%.4x", $id) if $showTagID eq 'H';
+                    } else {
+                        $id = Image::ExifTool::XMP::FullEscapeXML($id);
+                    }
+                    $xtra = " et:id='$id'";
+                    $xtra .= " xml:lang='$lang'" if $lang;
+                } else {
+                    $xtra = '';
+                }
+                if ($tabFormat) {
+                    my $table = $exifTool->GetTableName($tag);
+                    my $index = $exifTool->GetTagIndex($tag);
+                    $xtra .= " et:table='$table'";
+                    $xtra .= " et:index='$index'" if defined $index;
+                }
+                my $lastVal = $val;
+                for ($valNum=0; $valNum<2; ++$valNum) {
+                    $val = FormatXML($val, $ind, $group);
+                    if ($outFormat >= 0) {
+                        # normal output format (note: this will give
+                        # non-standard RDF/XML if there are any attributes)
+                        print $fp "\n <$tok$xtra$val</$tok>";
+                        last;
+                    } elsif ($valNum == 0) {
+                        CleanXML(\$desc);
+                        if ($xtra) {
+                            print $fp "\n <$tok>";
+                            print $fp "\n  <rdf:Description$xtra>";
+                            $descClose = "\n  </rdf:Description>";
+                        } else {
+                            print $fp "\n <$tok rdf:parseType='Resource'>";
+                            $descClose = '';
+                        }
+                        # print tag Description
+                        print $fp "\n   <et:desc>$desc</et:desc>";
+                        if ($printConv) {
+                            # print PrintConv value
+                            print $fp "\n   <et:prt$val</et:prt>";
+                            $val = $exifTool->GetValue($tag, 'ValueConv');
+                            $val = '' unless defined $val;
+                            # go back to print ValueConv value only if different
+                            if (ref $val ne 'SCALAR' and $val ne $lastVal) {
+                                next if ref $val ne 'ARRAY' or ref $lastVal ne 'ARRAY' or
+                                    @$val ne @$lastVal;
+                                # test all elements of an array
+                                my $i = 0;
+                                for ($i=0; $i<scalar(@$val); ++$i) {
+                                    last if $$val[$i] ne $$lastVal[$i];
+                                }
+                                next if $i < scalar(@$val);
+                            }
+                            print $fp "$descClose\n </$tok>";
+                            last;
+                        }
+                    }
+                    # print ValueConv value
+                    print $fp "\n   <et:val$val</et:val>";
+                    print $fp "$descClose\n </$tok>";
+                    last;
+                }
+                next;
+            } elsif ($json) {
+                # JSON or PHP output format
+                my $tok = $allGroup ? "$group:$tagName" : $tagName;
+                # (removed due to backward incompatibility)
+                # $tok .= '#' if $tag =~ /#/; # add back '#' suffix if used
+                next if $noDups{$tok};
+                $noDups{$tok} = 1;
+                print $fp ',' if $comma;
+                print $fp qq(\n$ind"$tok"$sep );
+                FormatJSON($fp, $val, $ind);
+                $comma = 1;
+                next;
+            }
+            my $id;
+            if ($showTagID) {
+                $id = $exifTool->GetTagID($tag);
+                if ($id =~ /^(\d+)(\.\d+)?$/) { # only print numeric ID's
+                    $id = sprintf("0x%.4x", $1) if $showTagID eq 'H';
+                } else {
+                    $id = '-';
+                }
+            }
+
+            # translate unprintable chars in value and remove trailing spaces
+            $val =~ tr/\x01-\x1f\x7f/./;
+            $val =~ s/\x00//g;
+            $val =~ s/\s+$//;
+
+            if ($html) {
+                print $fp "<tr>";
+                print $fp "<td>$group</td>" if defined $group;
+                print $fp "<td>$id</td>" if $showTagID;
+                print $fp "<td>$desc</td>" if $outFormat <= 1;
+                print $fp "<td>$val</td></tr>\n";
+            } else {
+                my $buff = '';
+                if ($tabFormat) {
+                    $buff = "$group\t" if defined $group;
+                    $buff .= "$id\t" if $showTagID;
+                    if ($outFormat <= 1) {
+                        $buff .= "$desc\t$val\n";
+                    } elsif (defined $line) {
+                        $line .= "\t$val";
+                    } else {
+                        $line = $val;
+                    }
+                } elsif ($outFormat < 0) {    # long format
+                    $buff = "[$group] " if defined $group;
+                    $buff .= "$id " if $showTagID;
+                    $buff .= "$desc\n      $val\n";
+                } elsif ($outFormat == 0 or $outFormat == 1) {
+                    my $wid;
+                    my $len = 0;
+                    if (defined $group) {
+                        $buff = sprintf("%-15s ", "[$group]");
+                        $len = 16;
+                    }
+                    if ($showTagID) {
+                        $wid = ($showTagID eq 'D') ? 5 : 6;
+                        $len += $wid + 1;
+                        ($wid = $len - length($buff) - 1) < 1 and $wid = 1;
+                        $buff .= sprintf "%${wid}s ", $id;
+                    }
+                    $wid = 32 - (length($buff) - $len);
+                    # pad description to a constant length
+                    # (get actual character length when using alternate languages
+                    # because these descriptions may contain UTF8-encoded characters)
+                    my $padLen = $wid - length($fixLen ? Encode::decode_utf8($desc) : $desc);
+                    $padLen = 0 if $padLen < 0;
+                    $buff .= $desc . (' ' x $padLen) . ": $val\n";
+                } elsif ($outFormat == 2) {
+                    $buff = "[$group] " if defined $group;
+                    $buff .= "$id " if $showTagID;
+                    $buff .= "$tagName: $val\n";
+                } elsif ($argFormat) {
+                    $buff = '-';
+                    $buff .= "$group:" if defined $group;
+                    $tagName .= '#' if $tag =~ /#/; # add '#' suffix if used
+                    $buff .= "$tagName=$val\n";
+                } else {
+                    $buff = "$group " if defined $group;
+                    $buff .= "$id " if $showTagID;
+                    $buff .= "$val\n";
+                }
+                print $fp $buff;
+            }
+        }
+        if ($html) {
+            print $fp "</table>\n";
+        } elsif ($xml) {
+            # close rdf:Description element
+            print $fp $outFormat < 1 ? "\n</rdf:Description>\n" : "/>\n";
+        } elsif ($json) {
+            print $fp "\n  $ket" if $lastGroup;
+            print $fp "\n$ket";
+            $comma = 1;
+        } elsif ($tabFormat and $outFormat > 1) {
+            print $fp "$line\n" if defined $line;
+        }
+    }
+    if ($outfile) {
+        print $fp $fileTrailer if $fileTrailer; # write file trailer
+        close($fp);
+        undef $comma;
+        if ($lineCount) {
+            ++$countCreated;
+        } else {
+            unlink $outfile; # don't keep empty output files
+        }
+    }
+    ++$count;
+}
+
+#------------------------------------------------------------------------------
+# Set information in file
+# Inputs: 0) ExifTool object reference, 1) source file name
+#         2) original source file name ('' to create from scratch)
+# Returns: true on success
+sub SetImageInfo($$$)
+{
+    my ($exifTool, $file, $orig) = @_;
+    my ($outfile, $restored, $isTemporary, $isStdout);
+    my $infile = $file;    # save infile in case we change it again
+    my $tagsFromSrc;
+
+    undef $tmpFile; # make sure this isn't defined
+
+    # clear any existing errors or warnings since we check these on return
+    delete $exifTool->{VALUE}->{Error};
+    delete $exifTool->{VALUE}->{Warning};
+
+    # first, try to determine our output file name so we can return quickly
+    # if it already exists (note: this test must be delayed until after we
+    # set tags from dynamic files if writing FileName or Directory)
+    if (defined $outOpt) {
+        if ($outOpt eq '-') {
+            $isStdout = 1;
+        } else {
+            $outfile = FilenameSPrintf($outOpt, $orig);
+            if ($outfile eq '') {
+                Warn "Can't create file with zero-length name from $orig\n";
+                ++$countBadCr;
+                return 0;
+            }
+            if (-d $outfile or $outfile =~ /\/$/) {
+                $outfile .= '/' unless $outfile =~ /\/$/;
+                my $name = $file;
+                $name =~ s/.*\///;  # remove directory name
+                $outfile .= $name;
+            } else {
+                my $srcType = GetFileType($file) || '';
+                my $outType = GetFileType($outfile);
+                if ($outType and ($srcType ne $outType or $outType eq 'ICC')) {
+                    unless (CanCreate($outfile)) {
+                        my $what = $srcType ? 'other types' : 'scratch';
+                        WarnOnce "Error: Can't create $outType files from $what\n";
+                        ++$countBadCr;
+                        return 0;
+                    }
+                    if ($file ne '') {
+                        # restore previous new values unless done already
+                        $exifTool->RestoreNewValues() unless $restored;
+                        $restored = 1;
+                        # translate to this type by setting specified tags from file
+                        my @setTags = @tags;
+                        foreach (@exclude) {
+                            push @setTags, "-$_";
+                        }
+                        # force some tags to be copied for certain file types
+                        my %forceCopy = (
+                            ICC => 'ICC_Profile',
+                            VRD => 'CanonVRD',
+                        );
+                        push @setTags, $forceCopy{$outType} if $forceCopy{$outType};
+                        # assume "-tagsFromFile @" unless -tagsFromFile already specified
+                        # (%setTags won't be empty if -tagsFromFile used)
+                        if (not %setTags or (@setTags and not $setTags{'@'})) {
+                            return 0 unless DoSetFromFile($exifTool, $file, \@setTags);
+                        } elsif (@setTags) {
+                            # add orphaned tags to existing "-tagsFromFile @" for this file only
+                            push @setTags, @{$setTags{'@'}};
+                            $tagsFromSrc = \@setTags;
+                        }
+                        # all done with source file -- create from meta information alone
+                        $file = '';
+                    }
+                }
+            }
+            $outfile = NextUnusedFilename($outfile);
+            if (-e $outfile and not $doSetFileName) {
+                Warn "Error: '$outfile' already exists - $infile\n";
+                ++$countBadWr;
+                return 0;
+            }
+        }
+    } elsif ($file eq '-') {
+        $isStdout = 1;
+    }
+    # set tags from destination file if required
+    if (@dynamicFiles) {
+        # restore previous values if necessary
+        $exifTool->RestoreNewValues() unless $restored;
+        my ($dyFile, %setTagsIndex);
+        foreach $dyFile (@dynamicFiles) {
+            if (not ref $dyFile) {
+                my ($fromFile, $setTags);
+                if ($dyFile eq '@') {
+                    $fromFile = $orig;
+                    $setTags = $tagsFromSrc || $setTags{$dyFile};
+                } else {
+                    $fromFile = FilenameSPrintf($dyFile, $orig);
+                    ++$countBadWr, return 0 unless defined $fromFile;
+                    $setTags = $setTags{$dyFile};
+                }
+                # do we have multiple -tagsFromFile options with this file?
+                if ($setTagsList{$dyFile}) {
+                    # use the tags set in the i-th occurrence
+                    my $i = $setTagsIndex{$dyFile} || 0;
+                    $setTagsIndex{$dyFile} = $i + 1;
+                    $setTags = $setTagsList{$dyFile}[$i] if $setTagsList{$dyFile}[$i];
+                }
+                # set new values values from file
+                return 0 unless DoSetFromFile($exifTool, $fromFile, $setTags);
+            } elsif (ref $dyFile eq 'ARRAY') {
+                # a dynamic file containing a simple tag value
+                my $fname = FilenameSPrintf($$dyFile[1], $orig);
+                my ($buff, $rtn, $wrn);
+                my $opts = $$dyFile[2];
+                if (defined $fname and SlurpFile($fname, \$buff)) {
+                    $verbose and print "Reading $$dyFile[0] from $fname\n";
+                    ($rtn, $wrn) = $mainTool->SetNewValue($$dyFile[0], $buff, %$opts);
+                    $wrn and Warn "$wrn\n";
+                }
+                # remove this tag if we couldn't set it properly
+                $rtn or $mainTool->SetNewValue($$dyFile[0], undef, Replace => 2,
+                                               ProtectSaved => $$opts{ProtectSaved});
+                next;
+            } elsif (ref $dyFile eq 'SCALAR') {
+                # set new values from CSV database
+                my ($f, $found, $tag);
+                # read tags for SourceFile '*' plus the specific file
+                foreach $f ('*', $file) {
+                    my $csvInfo = $database{$f};
+                    unless ($csvInfo) {
+                        next if $f eq '*' or not require Cwd;
+                        # check canonical file name
+                        $csvInfo = $database{Cwd::abs_path($f)} or next;
+                    }
+                    $found = 1;
+                    $verbose and print "Setting new values from $csv database\n";
+                    foreach $tag (sort keys %$csvInfo) {
+                        next if $tag =~ /\b(SourceFile|Directory|FileName)$/i; # don't write these
+                        my ($rtn, $wrn) = $mainTool->SetNewValue($tag, $$csvInfo{$tag},
+                                          Protected => 1, AddValue => $csvAdd,
+                                          ProtectSaved => $csvSaveCount);
+                        $wrn and Warn "$wrn\n" if $verbose;
+                    }
+                }
+                unless ($found) {
+                    Warn("No SourceFile '$file' in imported $csv database\n");
+                    if (require Cwd) {
+                        my $cFile = Cwd::abs_path($file);
+                        Warn("(canonical path: '$cFile')\n");
+                    }
+                    return 0;
+                }
+            }
+        }
+    }
+    if ($isStdout) {
+        # write to STDOUT
+        $outfile = \*STDOUT;
+        unless ($binaryStdout) {
+            binmode(STDOUT);
+            $binaryStdout = 1;
+        }
+    } else {
+        # determine what our output file name should be
+        my $newFileName = $exifTool->GetNewValues('FileName');
+        my $newDir = $exifTool->GetNewValues('Directory');
+        if (defined $newFileName or defined $newDir or ($doSetFileName and defined $outfile)) {
+            if ($newFileName) {
+                $newFileName = FilenameSPrintf($newFileName, $orig);
+                if (defined $outfile) {
+                    $outfile = Image::ExifTool::GetNewFileName($orig, $outfile) if $orig ne '';
+                    $outfile = Image::ExifTool::GetNewFileName($outfile, $newFileName);
+                } elsif ($orig ne '') {
+                    $outfile = Image::ExifTool::GetNewFileName($orig, $newFileName);
+                }
+            }
+            if ($newDir) {
+                $newDir = FilenameSPrintf($newDir, $orig);
+                $outfile = Image::ExifTool::GetNewFileName(defined $outfile ? $outfile : $orig, $newDir);
+            }
+            $outfile = NextUnusedFilename($outfile, $infile);
+            if (-e $outfile) {
+                if ($infile ne $outfile) {
+                    Warn "Error: '$outfile' already exists - $infile\n";
+                    ++$countBadWr;
+                    return 0;
+                }
+                undef $outfile; # not changing the file name after all
+            }
+        }
+        if (defined $outfile) {
+            $verbose and print "'$infile' --> '$outfile'\n";
+            # create output directory if necessary
+            CreateDirectory($outfile);
+            # set temporary file (automatically erased on abnormal exit)
+            $tmpFile = $outfile if defined $outOpt;
+        }
+        unless (defined $tmpFile) {
+            # count the number of tags and pseudo-tags we are writing
+            my ($numSet, $numPseudo) = $exifTool->CountNewValues();
+            if (-e $file) {
+                unless ($numSet) {
+                    # no need to write if no tags set
+                    print "Nothing changed in $file\n" if defined $verbose;
+                    ++$countSameWr;
+                    return 1;
+                }
+            } elsif (CanCreate($file)) {
+                if ($numSet == $numPseudo) {
+                    # no need to write if no real tags
+                    Warn("Error: Nothing to write - $file\n");
+                    ++$countBadWr;
+                    return 0;
+                }
+                unless (defined $outfile) {
+                    # create file from scratch
+                    $outfile = $file;
+                    $file = '';
+                }
+            } else {
+                # file doesn't exist, and we can't create it
+                Warn("Error: File not found - $file\n");
+                ++$countBadWr;
+                return 0;
+            }
+            # quickly rename file and/or set file date if this is all we are doing
+            if ($numSet == $numPseudo) {
+                my $r1 = $exifTool->SetFileModifyDate($file);
+                my $r2 = 0;
+                $r2 = $exifTool->SetFileName($file, $outfile) if defined $outfile;
+                if ($r1 > 0 or $r2 > 0) {
+                    ++$countGoodWr;
+                } elsif ($r1 < 0 or $r2 < 0) {
+                    ++$countBadWr;
+                    return 0;
+                } else {
+                    ++$countSameWr;
+                }
+                return 1;
+            }
+            unless (defined $outfile) {
+                # write to a truly temporary file
+                $outfile = "${file}_exiftool_tmp";
+                if (-e $outfile) {
+                    Warn("Error: Temporary file already exists: $outfile\n");
+                    ++$countBadWr;
+                    return 0;
+                }
+                $isTemporary = 1;
+            }
+            # new output file is temporary until we know it has been written properly
+            $tmpFile = $outfile;
+        }
+    }
+    # rewrite the file
+    my $success = $exifTool->WriteInfo($file, $outfile);
+
+    # get file time if preserving it
+    my ($modTime, $accTime);
+    if ($preserveTime and $success and -e $file) {
+        $modTime = $^T - (-M $file) * (24 * 3600);
+        $accTime = $^T - (-A $file) * (24 * 3600);
+    }
+    if ($success == 1) {
+        # preserve the original file times
+        if (defined $tmpFile) {
+            if (-e $file) {
+                if ($preserveTime and not utime($accTime, $modTime, $tmpFile)) {
+                    Warn "Error setting file time - $file\n";
+                }
+                if ($isTemporary) {
+                    # preserve original file attributes if possible
+                    Image::ExifTool::CopyFileAttrs($file, $outfile);
+                    # move original out of the way
+                    my $original = "${file}_original";
+                    if (not $overwriteOrig and not -e $original) {
+                        # rename the file and check again to be sure the file doesn't exist
+                        # (in case, say, the filesystem truncated the file extension)
+                        if (not Rename($file, $original) or -e $file) {
+                            Error "Error renaming $file\n";
+                            return 0;
+                        }
+                    }
+                    if ($overwriteOrig > 1) {
+                        # copy temporary file over top of original to preserve attributes
+                        my ($err, $buff);
+                        my $newFile = $tmpFile;
+                        Open(\*NEW_FILE, $newFile) or Error("Error opening $newFile\n"), return 0;
+                        binmode(NEW_FILE);
+
+                        #........................................................
+                        # temporary disable CTRL-C during this critical operation
+                        $critical = 1;
+                        undef $tmpFile;     # handle deletion of temporary file ourself
+                        if (Open(\*ORIG_FILE, $file, '>')) {
+                            binmode(ORIG_FILE);
+                            while (read(NEW_FILE, $buff, 65536)) {
+                                print ORIG_FILE $buff or $err = 1;
+                            }
+                            close(NEW_FILE);
+                            close(ORIG_FILE) or $err = 1;
+                            if ($err) {
+                                Warn "Couldn't overwrite in place - $file\n";
+                                unless (rename($newFile, $file) or
+                                    (unlink $file and Rename($newFile, $file)))
+                                {
+                                    Error("Error renaming $newFile to $file\n"), return 0;
+                                }
+                            } else {
+                                unlink $newFile;
+                                if ($preserveTime) {
+                                    unless (utime($accTime, $modTime, $file)) {
+                                        Warn "Error setting file time - $file\n";
+                                    }
+                                    # save time to set it later again to patch OS X 10.6 bug
+                                    $preserveTime{$file} = [ $accTime, $modTime ];
+                                }
+                            }
+                            ++$countGoodWr;
+                        } else {
+                            close(NEW_FILE);
+                            Warn "Error opening $file for writing\n";
+                            unlink $newFile;
+                            ++$countBadWr;
+                        }
+                        undef $critical;            # end critical section
+                        SigInt() if $interrupted;   # issue delayed SIGINT if necessary
+                        #........................................................
+
+                    # simply rename temporary file to replace original
+                    # (if we didn't already rename it to add "_original")
+                    } elsif (Rename($tmpFile, $file)) {
+                        ++$countGoodWr;
+                    } else {
+                        my $newFile = $tmpFile;
+                        undef $tmpFile; # (avoid deleting file if we get interrupted)
+                        # unlink may fail if already renamed or no permission
+                        if (not unlink($file)) {
+                            Warn "Error renaming temporary file to $file\n";
+                            unlink $newFile;
+                            ++$countBadWr;
+                        # try renaming again now that the target has been deleted
+                        } elsif (not Rename($newFile, $file)) {
+                            Warn "Error renaming temporary file to $file\n";
+                            # (don't delete tmp file now because it is all we have left)
+                            ++$countBadWr;
+                        } else {
+                            ++$countGoodWr;
+                        }
+                    }
+                } elsif ($overwriteOrig) {
+                    # erase original file
+                    unlink $file or Warn "Error erasing original $file\n";
+                    ++$countGoodWr;
+                } else {
+                    ++$countGoodCr;
+                }
+            } else {
+                # this file was created from scratch, not edited
+                ++$countGoodCr;
+            }
+        } else {
+            ++$countGoodWr;
+        }
+    } elsif ($success) {
+        if ($isTemporary) {
+            # just erase the temporary file since no changes were made
+            unlink $tmpFile;
+            ++$countSameWr;
+        } else {
+            if (defined $accTime and not utime($accTime, $modTime, $outfile)) {
+                Warn "Error setting file time - $file\n";
+            }
+            if ($overwriteOrig) {
+                unlink $file or Warn "Error erasing original $file\n";
+            }
+            ++$countCopyWr;
+        }
+        print "Nothing changed in $file\n" if defined $verbose;
+    } else {
+        unlink $tmpFile if defined $tmpFile;
+        ++$countBadWr;
+    }
+    undef $tmpFile;
+    return $success;
+}
+
+#------------------------------------------------------------------------------
+# Clean string for XML (also removes invalid control chars and malformed UTF-8)
+# Inputs: 0) string ref
+# Returns: nothing, but input string is escaped
+sub CleanXML($)
+{
+    my $strPt = shift;
+    # translate control characters that are invalid in XML
+    $$strPt =~ tr/\0-\x08\x0b\x0c\x0e-\x1f/./;
+    # fix malformed UTF-8 characters
+    Image::ExifTool::XMP::FixUTF8($strPt) if $utf8;
+    # escape necessary characters for XML
+    $$strPt = Image::ExifTool::XMP::EscapeXML($$strPt);
+}
+
+#------------------------------------------------------------------------------
+# Encode string for XML
+# Inputs: 0) string ref
+# Returns: encoding used (and input string is translated)
+sub EncodeXML($)
+{
+    my $strPt = shift;
+    if ($$strPt =~ /[\0-\x08\x0b\x0c\x0e-\x1f]/ or
+        ($utf8 and Image::ExifTool::XMP::IsUTF8($strPt) < 0))
+    {
+        # encode binary data and non-UTF8 with special characters as base64
+        $$strPt = Image::ExifTool::XMP::EncodeBase64($$strPt);
+        return 'http://www.w3.org/2001/XMLSchema#base64Binary'; #ATV
+    } elsif ($escapeHTML) {
+        $$strPt = Image::ExifTool::HTML::EscapeHTML($$strPt);
+    } else {
+        $$strPt = Image::ExifTool::XMP::EscapeXML($$strPt);
+    }
+    return '';  # not encoded
+}
+
+#------------------------------------------------------------------------------
+# Format value for XML output
+# Inputs: 0) value, 1) indentation, 2) group
+# Returns: formatted value
+sub FormatXML($$$)
+{
+    local $_;
+    my ($val, $ind, $grp) = @_;
+    my $gt = '>';
+    if (ref $val eq 'ARRAY') {
+        # convert ARRAY into an rdf:Bag
+        my $val2 = "\n$ind <rdf:Bag>";
+        foreach (@$val) {
+            $val2 .= "\n$ind  <rdf:li" . FormatXML($_, "$ind  ", $grp) . "</rdf:li>";
+        }
+        $val = "$val2\n$ind </rdf:Bag>\n$ind";
+    } elsif (ref $val eq 'HASH') {
+        $gt = " rdf:parseType='Resource'>";
+        my $val2 = '';
+        foreach (sort keys %$val) {
+            my $tok = $grp . ':' . $_;
+            $val2 .= "\n$ind <$tok" . FormatXML($$val{$_}, "$ind ", $grp) . "</$tok>";
+        }
+        $val = "$val2\n$ind";
+    } else {
+        # (note: SCALAR reference should have already been converted)
+        my $enc = EncodeXML(\$val);
+        $gt = " rdf:datatype='$enc'>\n" if $enc; #ATV
+    }
+    return $gt . $val;
+}
+
+#------------------------------------------------------------------------------
+# Escape string for JSON or PHP
+# Inputs: 0) string, 1) flag to force numbers to be quoted too
+# Returns: Escaped string (quoted if necessary)
+sub EscapeJSON($;$)
+{
+    my ($str, $quote) = @_;
+    unless ($quote) {
+        # JSON boolean (true or false)
+        return lc($str) if $str =~ /^(true|false)$/i and $json < 2;
+        # JSON/PHP number (see json.org for numerical format)
+        # return $str if $str =~ /^-?(\d|[1-9]\d+)(\.\d+)?(e[-+]?\d+)?$/i;
+        # (these big numbers caused problems for some JSON parsers, so be more conservative)
+        return $str if $str =~ /^-?(\d|[1-9]\d{1,14})(\.\d{1,16})?(e[-+]?\d{1,3})?$/i;
+    }
+    # escape special characters
+    $str =~ s/(["\t\n\r\\])/\\$jsonChar{$1}/sg;
+    if ($json < 2) { # JSON
+        # escape other control characters with \u
+        $str =~ s/([\0-\x1f])/sprintf("\\u%.4X",ord $1)/sge;
+        # JSON strings must be valid UTF8
+        Image::ExifTool::XMP::FixUTF8(\$str) if $utf8;
+    } else { # PHP
+        # must escape "$" too for PHP
+        $str =~ s/\$/\\\$/sg;
+        # escape other control characters with \x
+        $str =~ s/([\0-\x1f])/sprintf("\\x%.2X",ord $1)/sge;
+    }
+    return '"' . $str . '"';    # return the quoted string
+}
+
+#------------------------------------------------------------------------------
+# Print JSON or PHP value
+# Inputs: 0) file reference, 1) value, 2) indentation
+sub FormatJSON($$$)
+{
+    local $_;
+    my ($fp, $val, $ind) = @_;
+    my $comma;
+    if (not ref $val) {
+        print $fp EscapeJSON($val);
+    } elsif (ref $val eq 'ARRAY') {
+        if ($joinLists and not ref $$val[0]) {
+            print $fp EscapeJSON(join $listSep, @$val);
+        } else {
+            my ($bra, $ket) = $json == 1 ? ('[',']') : ('Array(',')');
+            print $fp $bra;
+            foreach (@$val) {
+                print $fp ',' if $comma;
+                FormatJSON($fp, $_, $ind);
+                $comma = 1,
+            }
+            print $fp $ket,
+        }
+    } elsif (ref $val eq 'HASH') {
+        my ($bra, $ket, $sep) = $json == 1 ? ('{','}',':') : ('Array(',')',' =>');
+        print $fp $bra;
+        foreach (sort keys %$val) {
+            print $fp ',' if $comma;
+            print $fp qq(\n$ind  "$_"$sep );
+            FormatJSON($fp, $$val{$_}, "$ind  ");
+            $comma = 1,
+        }
+        print $fp "\n$ind$ket",
+    } else {
+        # (note: SCALAR reference should have already been converted)
+        print $fp '"<err>"';
+    }
+}
+
+#------------------------------------------------------------------------------
+# Format value for CSV file
+# Inputs: value
+# Returns: value quoted if necessary
+sub FormatCSV($)
+{
+    my $val = shift;
+    $val = qq{"$val"} if $val =~ s/"/""/g or $val =~ /(^\s+|\s+$)/ or $val =~ /[,\n\r]/;
+    return $val;
+}
+
+#------------------------------------------------------------------------------
+# Print accumulated CSV information
+sub PrintCSV()
+{
+    my ($file, $lcTag, @tags);
+
+    @csvTags or @csvTags = sort keys %csvTags;
+    # make a list of tags actually found
+    foreach $lcTag (@csvTags) {
+        push @tags, $csvTags{$lcTag} if $csvTags{$lcTag};
+    }
+    print join(',', 'SourceFile', @tags), "\n";
+    my $empty = $forcePrint ? '-' : '';
+    foreach $file (@csvFiles) {
+        my @vals = (FormatCSV($file));  # start with full file name
+        my $csvInfo = $database{$file};
+        foreach $lcTag (@csvTags) {
+            next unless $csvTags{$lcTag};
+            my $val = $$csvInfo{$lcTag};
+            defined $val or push(@vals,$empty), next;
+            push @vals, FormatCSV($val);
+        }
+        print join(',', @vals), "\n";
+    }
+}
+
+#------------------------------------------------------------------------------
+# Convert binary data (SCALAR references) for printing
+# Inputs: 0) object reference
+# Returns: converted object
+sub ConvertBinary($)
+{
+    my $obj = shift;
+    my ($key, $val);
+    if (ref $obj eq 'HASH') {
+        foreach $key (keys %$obj) {
+            $$obj{$key} = ConvertBinary($$obj{$key}) if ref $$obj{$key};
+        }
+    } elsif (ref $obj eq 'ARRAY') {
+        foreach $val (@$obj) {
+            $val = ConvertBinary($val) if ref $val;
+        }
+    } elsif (ref $obj eq 'SCALAR') {
+        # (binaryOutput flag is set to 0 for binary mode of XML/PHP output formats)
+        if (defined $binaryOutput) {
+            $obj = $$obj;
+        } else {
+            # (-b is not valid for JSON or HTML output)
+            my $bOpt = ($json==1 or $html) ? '' : ', use -b option to extract';
+            if ($$obj =~ /^Binary data/) {
+                $obj = "($$obj$bOpt)";
+            } else {
+                $obj = '(Binary data ' . length($$obj) . " bytes$bOpt)";
+            }
+        }
+    }
+    return $obj;
+}
+
+#------------------------------------------------------------------------------
+# Add tag list for copying tags from specified file
+# Inputs: 0) set tags file name (or FMT), 1) options for SetNewValuesFromFile()
+# Returns: nothing
+# Notes: Uses global variables: %setTags, %setTagsList, @newValues, $saveCount
+sub AddSetTagsFile($;$)
+{
+    my ($setFile, $opts) = @_;
+    if ($setTags{$setFile}) {
+        # move these tags aside and make a new list for the next invocation of this file
+        $setTagsList{$setFile} or $setTagsList{$setFile} = [ ];
+        push @{$setTagsList{$setFile}}, $setTags{$setFile};
+    }
+    $setTags{$setFile} = [];    # create list for tags to copy from this file
+    # insert marker to save new values now (necessary even if this is not a dynamic
+    # file in case the same file is source'd multiple times in a single command)
+    push @newValues, { SaveCount => ++$saveCount }, "TagsFromFile=$setFile";
+    # add option to protect the tags which are assigned after this
+    # (this is the mechanism by which the command-line order-of-operations is preserved)
+    $opts or $opts = { };
+    $$opts{ProtectSaved} = $saveCount;
+    push @{$setTags{$setFile}}, $opts;
+}
+
+#------------------------------------------------------------------------------
+# Set new values from file
+# Inputs: 0) exiftool ref, 1) filename, 2) reference to list of values to set
+# Returns: 0 on error (and increments $countBadWr)
+sub DoSetFromFile($$$)
+{
+    local $_;
+    my ($exifTool, $file, $setTags) = @_;
+    $verbose and print "Setting new values from $file\n";
+    my $info = $exifTool->SetNewValuesFromFile($file, @$setTags);
+    my $numSet = scalar(keys %$info);
+    if ($$info{Error}) {
+        # delete all error and warning tags
+        my @warns = grep /^(Error|Warning)\b/, keys %$info;
+        $numSet -= scalar(@warns);
+        # issue a warning for the main error only if we were able to set some tags
+        if (keys(%$info) > @warns) {
+            my $err = $$info{Error};
+            delete $$info{$_} foreach @warns;
+            $$info{Warning} = $err;
+        }
+    } elsif ($$info{Warning}) {
+        my $warns = 1;
+        ++$warns while $$info{"Warning ($warns)"};
+        $numSet -= $warns;
+    }
+    PrintErrors($exifTool, $info, $file);
+    $$info{Error} and ++$countBadWr, return 0;
+    Warn "Warning: No writable tags set from $file\n" unless $numSet;
+    return 1;
+}
+
+#------------------------------------------------------------------------------
+# Translate backslashes to forward slashes in filename if necessary
+# Inputs: 0) Filename
+# Returns: nothing, but changes filename if necessary
+sub CleanFilename($)
+{
+    $_[0] =~ tr/\\/\// if $hasBackslash{$^O};
+}
+
+#------------------------------------------------------------------------------
+# process files in our @files list
+# Inputs: 0) ExifTool ref, 1) list ref to just return full file names
+# Notes: arg 0 is not used if arg 1 is defined
+sub ProcessFiles($;$)
+{
+    my ($exifTool, $list) = @_;
+    my $file;
+    foreach $file (@files) {
+        if (defined $progressMax) {
+            ++$progress;
+            $progStr = " [$progress/$progressMax]";
+        }
+        if (-d $file) {
+            $multiFile = $validFile = 1;
+            ScanDir($mainTool, $file, $list);
+        } elsif ($filterFlag and not AcceptFile($file)) {
+            if (-e $file) {
+                $filtered = 1;
+                $verbose and print "-------- $file (wrong extension)$progStr\n";
+            } else {
+                Warn "File not found: $file\n";
+                $rtnVal = 1;
+            }
+        } else {
+            $validFile = 1;
+            $list and push(@$list, $file), next;
+            GetImageInfo($exifTool, $file);
+        }
+    }
+}
+
+#------------------------------------------------------------------------------
+# Scan directory for image files
+# Inputs: 0) ExifTool ref, 1) directory name, 2) list ref to return file names
+sub ScanDir($$;$)
+{
+    my ($exifTool, $dir, $list) = @_;
+    opendir(DIR_HANDLE, $dir) or Warn("Error opening directory $dir\n"), return;
+    my @fileList = readdir(DIR_HANDLE);
+    closedir(DIR_HANDLE);
+
+    my $file;
+    $dir =~ /\/$/ or $dir .= '/';
+    foreach $file (@fileList) {
+        my $path = "$dir$file";
+        if (-d $path) {
+            next unless $recurse and $file !~ /^\./; # ignore dirs starting with "."
+            next if $ignore{$file} or ($ignore{SYMLINKS} and -l $path);
+            ScanDir($exifTool, $path, $list);
+            next;
+        }
+        # apply rules from -ext options
+        my $accepted;
+        if ($filterFlag) {
+            $accepted = AcceptFile($file) or next;
+            # must be specifically accepted to bypass selection logic
+            $accepted &= 0x01;
+        }
+        unless ($accepted) {
+            # read/write this file if it is a supported type
+            if ($scanWritable) {
+                if ($scanWritable eq '1') {
+                    next unless CanWrite($file);
+                } else {
+                    my $type = GetFileType($file);
+                    next unless defined $type and $type eq $scanWritable;
+                }
+            } elsif (not GetFileType($file)) {
+                next unless $doUnzip;
+                next unless $file =~ /\.(gz|bz2)$/i;
+            }
+        }
+        $list and push(@$list, $path), next;
+        GetImageInfo($exifTool, $path);
+    }
+    ++$countDir;
+}
+
+#------------------------------------------------------------------------------
+# patch for OS X 10.6 to preserve file modify date
+# (this probably isn't a 100% fix, but it may solve a majority of the cases)
+sub PreserveTime()
+{
+    local $_;
+    utime @{$preserveTime{$_}}, $_ foreach keys %preserveTime;
+    undef %preserveTime;
+}
+
+#------------------------------------------------------------------------------
+# Add print format entry
+# Inputs: 0) expression string
+sub AddPrintFormat($)
+{
+    my $expr = shift;
+    my $type;
+    if ($expr =~ /^#/) {
+        $expr =~ s/^#\[(HEAD|BODY|TAIL)\]// or return; # ignore comments
+        $type = $1;
+    } else {
+        $type = 'BODY';
+    }
+    $printFmt{$type} or $printFmt{$type} = [ ];
+    push @{$printFmt{$type}}, $expr;
+    # add to list of requested tags
+    push @tags, $expr =~ /\$((?:[-\w]+:)*[-\w]+#?)/g;
+    # tags contained in braces too...
+    push @tags, $expr =~ /\$\{((?:[-\w]+:)*[-\w]+#?)\}/g;
+}
+
+#------------------------------------------------------------------------------
+# Load print format file
+# Inputs: 0) file name
+# - saves lines of file to %printFmt list
+# - adds tag names to @tags list
+sub LoadPrintFormat($)
+{
+    my $arg = shift;
+    if (not defined $arg) {
+        Error "Must specify file or expression for -p option\n";
+    } elsif (-f $arg and Open(\*FMT_FILE, $arg)) {
+        foreach (<FMT_FILE>) {
+            AddPrintFormat($_);
+        }
+        close(FMT_FILE);
+    } else {
+        AddPrintFormat($arg . "\n");
+    }
+}
+
+#------------------------------------------------------------------------------
+# A sort of sprintf for filenames
+# Inputs: 0) format string (%d=dir, %f=file name, %e=ext),
+#         1) source filename or undef to test format string
+# Returns: new filename or undef on error (or if no file and fmt contains token)
+sub FilenameSPrintf($;$)
+{
+    my ($fmt, $file) = @_;
+    local $_;
+    # return format string straight away if no tokens
+    return $fmt unless $fmt =~ /%[-+]?\d*\.?\d*[lu]?[dfe]/;
+    return undef unless defined $file;
+    CleanFilename($file);   # make sure we are using forward slashes
+    # split filename into directory, file, extension
+    my @parts = ($file =~ /^(.*?)([^\/]*?)(\.[^.\/]*)?$/);
+    $parts[2] = $parts[2] ? substr($parts[2], 1) : '';
+    @parts or Warn("Error: Bad pattern match for file $file\n"), return undef;
+    my %part;
+    foreach ('d','f','e') {
+        $part{$_} = shift @parts;
+    }
+    my ($filename, $pos) = ('', 0);
+    while ($fmt =~ /(%([-+]?)(\d*)\.?(\d*)([lu]?)([dfe]))/g) {
+        $filename .= substr($fmt, $pos, pos($fmt) - $pos - length($1));
+        $pos = pos($fmt);
+        my ($sign, $wid, $skip, $mod, $code) = ($2, $3, $4 || 0, $5, $6);
+        my $len = length $part{$code};
+        next unless $skip < $len;
+        $wid = $len - $skip if $wid eq '' or $wid + $skip > $len;
+        $skip = $len - $wid - $skip if $sign eq '-';
+        my $part = substr($part{$code}, $skip, $wid);
+        $part = ($mod eq 'u') ? uc($part) : lc($part) if $mod;
+        $filename .= $part;
+    }
+    $filename .= substr($fmt, $pos); # add rest of file name
+    # remove double slashes (except at beginning to allow Windows UNC paths)
+    $filename =~ s{(?!^)//}{/}g;
+    return $filename;
+}
+
+#------------------------------------------------------------------------------
+# Convert number to alphabetical index: a, b, c, ... z, aa, ab ...
+# Inputs: 0) number
+# Returns: alphabetical index string
+sub Num2Alpha($)
+{
+    my $num = shift;
+    my $alpha = chr(97 + ($num % 26));
+    while ($num >= 26) {
+        $num = int($num / 26) - 1;
+        $alpha = chr(97 + ($num % 26)) . $alpha;
+    }
+    return $alpha;
+}
+
+#------------------------------------------------------------------------------
+# Expand '%c' and '%C' codes if filename to get next unused file name
+# Inputs: 0) file name format string, 1) filename ok to use even if it exists
+# Returns: new file name
+sub NextUnusedFilename($;$)
+{
+    my ($fmt, $okfile) = @_;
+    return $fmt unless $fmt =~ /%[-+]?\d*\.?\d*[lun]?[cC]/;
+    my %sep = ( '-' => '-', '+' => '_' );
+    my ($copy, $alpha) = (0, 'a');
+    for (;;) {
+        my ($filename, $pos) = ('', 0);
+        while ($fmt =~ /(%([-+]?)(\d*)(\.?)(\d*)([lun]?)([cC]))/g) {
+            $filename .= substr($fmt, $pos, pos($fmt) - $pos - length($1));
+            $pos = pos($fmt);
+            my ($sign, $wid, $dec, $wid2, $mod, $tok) = ($2, $3 || 0, $4, $5 || 0, $6, $7);
+            if ($tok eq 'C') {
+                $seqFileNum = $wid if $wid and not $seqFileNum;
+                $wid = $wid2;
+            } else {
+                next unless $dec or $copy;
+                $wid = $wid2 if $wid < $wid2;
+            }
+            # add dash or underline separator if '-' or '+' specified
+            $filename .= $sep{$sign} if $sign;
+            if ($mod and $mod ne 'n') {
+                my $a = $tok eq 'C' ? Num2Alpha($seqFileNum++) : $alpha;
+                my $str = ($wid and $wid > length $a) ? 'a' x ($wid - length($a)) : '';
+                $str .= $a;
+                $str = uc $str if $mod eq 'u';
+                $filename .= $str;
+            } else {
+                my $c = $tok eq 'C' ? $seqFileNum++ : $copy;
+                my $num = $c + ($mod ? 1 : 0);
+                $filename .= $wid ? sprintf("%.${wid}d",$num) : $num;
+            }
+        }
+        $filename .= substr($fmt, $pos); # add rest of file name
+        # return now with filename unless file exists
+        return $filename unless -e $filename;
+        return $filename if defined $okfile and $filename eq $okfile;
+        ++$copy;
+        ++$alpha;
+    }
+}
+
+#------------------------------------------------------------------------------
+# Create directory for specified file
+# Inputs: 0) complete file name including path
+# Returns: true if a directory was created
+sub CreateDirectory($)
+{
+    my $file = shift;
+    my ($dir, $created);
+    ($dir = $file) =~ s/[^\/]*$//;  # remove filename from path specification
+    if ($dir and not -d $dir) {
+        my @parts = split /\//, $dir;
+        $dir = '';
+        foreach (@parts) {
+            $dir .= $_;
+            if (length $dir and not -d $dir and
+                # don't try to create a network drive root directory
+                not ($hasBackslash{$^O} and $dir =~ m{^//[^/]*$}))
+            {
+                # create directory since it doesn't exist
+                mkdir($dir, 0777) or Error("Error creating directory $dir\n"), return 0;
+                $verbose and print "Created directory $dir\n";
+                $created = 1;
+            }
+            $dir .= '/';
+        }
+    }
+    ++$countNewDir if $created;
+    return $created;
+}
+
+#------------------------------------------------------------------------------
+# Open output text file
+# Inputs: 0) file name format string
+# Returns: 0) file reference (or undef on error), 1) file name if opened
+sub OpenOutputFile($)
+{
+    my $file = shift;
+    my ($fp, $outfile);
+    if ($textOut) {
+        $outfile = $file;
+        CleanFilename($outfile);
+        if ($textOut =~ /%[-+]?\d*\.?\d*[lun]?[dfecC]/) {
+            # make filename from printf-like $textOut
+            $outfile = FilenameSPrintf($textOut, $file);
+            return () unless defined $outfile;
+            $outfile = NextUnusedFilename($outfile);
+            CreateDirectory($outfile);  # create directory if necessary
+        } else {
+            $outfile =~ s/\.[^.\/]*$//; # remove extension if it exists
+            $outfile .= $textOut;
+        }
+        if (-e $outfile and not $textOverwrite) {
+            Warn "Output file $outfile already exists for $file\n";
+            return ();
+        }
+        Open(\*OUTFILE, $outfile, '>') or Error("Error creating $outfile\n"), return ();
+        binmode(OUTFILE) if $binaryOutput;
+        $fp = \*OUTFILE;
+    } else {
+        $fp = \*STDOUT;
+    }
+    return($fp, $outfile);
+}
+
+#------------------------------------------------------------------------------
+# Filter files based on extension
+# Inputs: 0) file name
+# Returns: 0 = rejected, 1 = specifically accepted, 2 = accepted by default
+# Notes: This routine should only be called if $filterFlag is set
+sub AcceptFile($)
+{
+    my $file = shift;
+    my $ext = ($file =~ /.*\.(.+)$/) ? uc($1) : '';
+    return $filterExt{$ext} if defined $filterExt{$ext};
+    return $filterExt{'*'} if defined $filterExt{'*'};
+    return 0 if $filterFlag & 0x02; # reject if accepting specific extensions
+    return 2;   # accept by default
+}
+
+#------------------------------------------------------------------------------
+# Slurp file into buffer
+# Inputs: 0) file name, 1) buffer reference
+# Returns: 1 on success
+sub SlurpFile($$)
+{
+    my ($file, $buffPt) = @_;
+    Open(\*INFILE, $file) or Warn("Error opening file $file\n"), return 0;
+    binmode(INFILE);
+    my $bsize = 1024 * 1024;
+    my $num = read(INFILE, $$buffPt, $bsize);
+    unless ($num) {
+        close(INFILE);
+        Warn("Error reading $file\n");
+        return 0;
+    }
+    my $bmax = 64 * $bsize;
+    while ($num == $bsize) {
+        $bsize *= 2 if $bsize < $bmax;
+        my $buff;
+        $num = read(INFILE, $buff, $bsize);
+        last unless $num;
+        $$buffPt .= $buff;
+    }
+    close(INFILE);
+    return 1;
+}
+
+#------------------------------------------------------------------------------
+# Read arguments from -stay_open argfile
+# Inputs: 0) argument list ref
+# Notes: blocks until -execute, -stay_open or -@ option is available
+#        (or until there was an error reading from the file)
+sub ReadStayOpen($)
+{
+    my $args = shift;
+    my (@newArgs, $processArgs, $result, $optArgs);
+    my $lastOpt = '';
+    my $unparsed = length $stayOpenBuff;
+    for (;;) {
+        if ($unparsed) {
+            # parse data already read from argfile
+            $result = $unparsed;
+            undef $unparsed;
+        } else {
+            # read more data from argfile
+            # - this read may block (which is good) if reading from a pipe
+            $result = sysread(STAYOPEN, $stayOpenBuff, 65536, length($stayOpenBuff));
+        }
+        if ($result) {
+            my $pos = 0;
+            while ($stayOpenBuff =~ /\n/g) {
+                my $len = pos($stayOpenBuff) - $pos;
+                my $arg = substr($stayOpenBuff, $pos, $len);
+                $pos += $len;
+                $arg =~ s/^\s+//;           # remove leading white space
+                $arg =~ s/[\x0d\x0a]+$//s;  # remove trailing newline
+                # remove white space before, and single space after '=', '+=', '-=' or '<='
+                $arg =~ s/^(-[-:\w]+#?)\s*([-+<]?=) ?/$1$2/;
+                next if $arg eq '' or $arg =~ /^#/; # ignore empty/comment lines
+                push @newArgs, $arg;
+                if ($optArgs) {
+                    # this is an argument for the last option
+                    undef $optArgs;
+                    next unless $lastOpt eq '-stay_open' or $lastOpt eq '-@';
+                } else {
+                    $optArgs = $optArgs{$arg};
+                    $lastOpt = lc $arg;
+                    $optArgs = $optArgs{$lastOpt} unless defined $optArgs;
+                    next unless $lastOpt =~ /^-execute\d*$/;
+                }
+                $processArgs = 1;
+                last;   # process arguments up to this point
+            }
+            next unless $pos;   # nothing to do if we didn't read any arguments
+            # keep unprocessed data in buffer
+            $stayOpenBuff = substr($stayOpenBuff, $pos);
+            if ($processArgs) {
+                # process new arguments after -execute or -stay_open option
+                unshift @$args, @newArgs;
+                last;
+            }
+        } elsif ($result == 0) {
+            # sysread() didn't block (ie. when reading from a file),
+            # so wait for a short time (1/100 sec) then try again
+            # Note: may break out of this early if SIGCONT is received
+            select(undef,undef,undef,0.01);
+        } else {
+            Warn "Error reading from ARGFILE\n";
+            close STAYOPEN;
+            $stayOpen = 0;
+            last;
+        }
+    }
+}
+
+#------------------------------------------------------------------------------
+# Print list of tags
+# Inputs: 0) message, 1-N) list of tag names
+sub PrintTagList($@)
+{
+    my $msg = shift;
+    print $msg, ":\n" unless $quiet;
+    print ' ';
+    my $len = 1;
+    my $tag;
+    foreach $tag (@_) {
+        my $taglen = length($tag);
+        if ($len + $taglen > 78) {
+            print "\n ";
+            $len = 1;
+        }
+        print " $tag";
+        $len += $taglen + 1;
+    }
+    @_ or print ' [empty list]';
+    print "\n";
+}
+
+#------------------------------------------------------------------------------
+# Print warnings and errors from info hash
+# Inputs: 0) ExifTool object ref, 1) info hash, 2) file name
+sub PrintErrors($$$)
+{
+    my ($exifTool, $info, $file) = @_;
+    my ($tag, $key);
+    foreach $tag (qw(Warning Error)) {
+        next unless $$info{$tag};
+        my @keys = ( $tag );
+        push @keys, sort(grep /^$tag /, keys %$info) if $exifTool->Options('Duplicates');
+        foreach $key (@keys) {
+            Warn "$tag: $info->{$key} - $file\n";
+        }
+    }
+}
+
+__END__
+
