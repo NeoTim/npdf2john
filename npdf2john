@@ -1378,25 +1378,6 @@ if (defined $deleteOrig) {
 
 } elsif (not $binaryStdout and not $quiet) {
 
-    # print summary
-    my $tot = $count + $countBad;
-    my $totWr = $countGoodWr + $countBadWr + $countSameWr + $countCopyWr +
-                $countGoodCr + $countBadCr;
-    if ($countDir or $totWr or $countFailed or $tot > 1 or $textOut) {
-        my $o = (($html or $json or $xml or %printFmt or $csv) and not $textOut) ? \*STDERR : \*STDOUT;
-        printf($o "%5d directories scanned\n", $countDir) if $countDir;
-        printf($o "%5d directories created\n", $countNewDir) if $countNewDir;
-        printf($o "%5d files failed condition\n", $countFailed) if $countFailed;
-        printf($o "%5d image files created\n", $countGoodCr) if $countGoodCr;
-        printf($o "%5d image files updated\n", $countGoodWr) if $totWr - $countGoodCr - $countBadCr - $countCopyWr;
-        printf($o "%5d image files unchanged\n", $countSameWr) if $countSameWr;
-        printf($o "%5d image files copied\n", $countCopyWr) if $countCopyWr;
-        printf($o "%5d files weren't updated due to errors\n", $countBadWr) if $countBadWr;
-        printf($o "%5d files weren't created due to errors\n", $countBadCr) if $countBadCr;
-        printf($o "%5d image files read\n", $count) if $tot>1 or ($countDir and not $totWr);
-        printf($o "%5d files could not be read\n", $countBad) if $countBad;
-        printf($o "%5d output files created\n", $countCreated) if $textOut;
-    }
 }
 
 # set error status if we had any errors or if all files failed the "-if" condition
