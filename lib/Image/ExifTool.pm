@@ -3457,24 +3457,6 @@ sub Decode($$$;$$$)
     my ($self, $val, $from, $fromOrder, $to, $toOrder) = @_;
     $from or $from = $$self{OPTIONS}{Charset};
     $to or $to = $$self{OPTIONS}{Charset};
-    if ($from ne $to and length $val) {
-        require Image::ExifTool::Charset;
-        my $cs1 = $Image::ExifTool::Charset::csType{$from};
-        my $cs2 = $Image::ExifTool::Charset::csType{$to};
-        if ($cs1 and $cs2 and not $cs2 & 0x002) {
-            # treat as straight ASCII if no character will need remapping
-            if (($cs1 | $cs2) & 0x680 or $val =~ /[\x80-\xff]/) {
-                my $uni = Image::ExifTool::Charset::Decompose($self, $val, $from, $fromOrder);
-                $val = Image::ExifTool::Charset::Recompose($self, $uni, $to, $toOrder);
-            }
-        } elsif ($self) {
-            my $set = $cs1 ? $to : $from;
-            unless ($$self{"DecodeWarn$set"}) {
-                $self->Warn("Unsupported character set ($set)");
-                $$self{"DecodeWarn$set"} = 1;
-            }
-        }
-    }
     return $val;
 }
 

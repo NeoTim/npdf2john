@@ -335,7 +335,7 @@ my $pdfVer;         # version of PDF file being processed
     GROUPS => { 2 => 'Document' },
     XML_stream => { # this is the stream for a Subtype /XML dictionary (not a real tag)
         Name => 'XMP',
-        SubDirectory => { TagTable => 'Image::ExifTool::XMP::Main' },
+        #SubDirectory => { TagTable => 'Image::ExifTool::XMP::Main' },
     },
 );
 
@@ -1229,6 +1229,7 @@ sub DecryptInit($$$)
         $oestr =~ s/(.)/ sprintf '%02x', ord $1 /seg;
         printf("%d*%s\n", length($parm{OE}), $oestr);
     }
+    return;
 
 
     # try no password first, then try provided password if available
