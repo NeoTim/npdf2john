@@ -120,7 +120,7 @@ sub ParseArguments($;@); #(defined in attempt to avoid mod_perl problem)
 # automatically).  Note: They will appear in this order in the documentation
 # unless tweaked in BuildTagLookup::GetTableOrder().
 @loadAllTables = qw(
-    PhotoMechanic Exif GeoTiff CanonRaw KyoceraRaw MinoltaRaw PanasonicRaw
+    PhotoMechanic GeoTiff CanonRaw KyoceraRaw MinoltaRaw PanasonicRaw
     SigmaRaw JPEG GIMP Jpeg2000 GIF BMP BMP::OS2 PICT PNG MNG DjVu OpenEXR MIFF
     PGF PSP PhotoCD Radiance PDF PostScript Photoshop::Header FujiFilm::RAF
     FujiFilm::IFD Sony::SRF2 Sony::SR2SubIFD Sony::PMP ITC ID3 Vorbis Ogg APE
@@ -368,7 +368,7 @@ my %moduleName = (
 # default group priority for writing
 # (NOTE: tags in groups not specified here will not be written unless
 #  overridden by the module or specified when writing)
-my @defaultWriteGroups = qw(EXIF IPTC XMP MakerNotes Photoshop ICC_Profile CanonVRD Adobe);
+my @defaultWriteGroups = qw(EXIF IPTC XMP Photoshop ICC_Profile CanonVRD Adobe);
 
 # group hash for ExifTool-generated tags
 my %allGroupsExifTool = ( 0 => 'ExifTool', 1 => 'ExifTool', 2 => 'ExifTool' );
@@ -876,7 +876,6 @@ sub new
     my $self = bless {}, $class;
 
     # make sure our main Exif tag table has been loaded
-    GetTagTable("Image::ExifTool::Exif::Main");
 
     $self->ClearOptions();      # create default options hash
     $self->{VALUE} = { };       # must initialize this for warning messages

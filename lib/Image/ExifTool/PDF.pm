@@ -1174,7 +1174,6 @@ sub DecryptInit($$$)
                 $parm{$_} = ReadPDFValue($$encrypt{$_});
                 return "Invalid Encrypt $_ entry" unless length $parm{$_} == 32;
             }
-            require Image::ExifTool::AES;   # will need this later
         }
     } else {
         return "Encryption version $ver not currently supported";
