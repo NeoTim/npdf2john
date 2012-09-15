@@ -29,7 +29,7 @@
 #               modify it under the same terms as Perl itself.
 #------------------------------------------------------------------------------
 
-package File::RandomAccess;
+package RandomAccess;
 
 use strict;
 require 5.002;

@@ -14,7 +14,7 @@ require 5.004;
 
 my $version = '8.99';
 
-# add our 'lib' directory to the include list BEFORE 'use Image::ExifTool'
+# add our 'lib' directory to the include list BEFORE 'use ExifTool'
 my $exeDir;
 BEGIN {
     # get exe directory
@@ -24,10 +24,10 @@ BEGIN {
     # load or disable config file if specified
     if (@ARGV and lc($ARGV[0]) eq '-config') {
         shift;
-        $Image::ExifTool::configFile = shift;
+        $ExifTool::configFile = shift;
     }
 }
-use Image::ExifTool qw{:Public Open};
+use ExifTool qw{:Public Open};
 
 # function prototypes
 sub SigInt();
@@ -391,11 +391,11 @@ if ($^O eq 'MSWin32' and eval 'require File::Glob') {
     $doGlob = 1;
 }
 
-$mainTool = new Image::ExifTool;        # create ExifTool object
+$mainTool = new ExifTool;        # create ExifTool object
 
 # don't extract duplicates by default unless set by UserDefined::Options
-$mainTool->Options(Duplicates => 0) unless %Image::ExifTool::UserDefined::Options
-    and defined $Image::ExifTool::UserDefined::Options{Duplicates};
+$mainTool->Options(Duplicates => 0) unless %ExifTool::UserDefined::Options
+    and defined $ExifTool::UserDefined::Options{Duplicates};
 
 # parse command-line options in 2 passes...
 # pass 1: set all of our ExifTool options
@@ -433,7 +433,7 @@ for (;;) {
         # require MWG module if used in any argument
         # (note: this also covers the -p option because these tags were added to @tags)
         $useMWG = 1 if not $useMWG and grep /^mwg:/i, @tags;
-        require Image::ExifTool::MWG if $useMWG;
+        require ExifTool::MWG if $useMWG;
     }
     if (@nextPass) {
         # process arguments which were deferred to the next pass
@@ -469,11 +469,11 @@ for (;;) {
             }
             $helped = 1;
             if ($type eq 'x') {
-                require Image::ExifTool::TagInfoXML;
+                require ExifTool::TagInfoXML;
                 my %opts;
                 $opts{Flags} = 1 if $forcePrint;
                 $opts{NoDesc} = 1 if $outFormat > 0;
-                Image::ExifTool::TagInfoXML::Write(undef, $group, %opts);
+                ExifTool::TagInfoXML::Write(undef, $group, %opts);
                 next;
             }
             my $wr = ($type eq 'w');
@@ -502,14 +502,6 @@ for (;;) {
             my $family = $2 || 0;
             PrintTagList("Groups in family $family", GetAllGroups($family));
         }
-        next;
-    }
-    if ($a eq 'ver') {
-        $pass or push(@nextPass,'-ver'), next;
-        my $libVer = $Image::ExifTool::VERSION;
-        my $str = $libVer eq $version ? '' : " [Warning: Library version is $libVer]";
-        print("$version$str$Image::ExifTool::RELEASE\n");
-        $helped = 1;
         next;
     }
     if (/^(all|add)?tagsfromfile(=.*)?$/i) {
@@ -585,7 +577,7 @@ for (;;) {
         if (not $charset) {
             $pass or push(@nextPass, '-charset'), next;
             my %charsets;
-            $charsets{$_} = 1 foreach values %Image::ExifTool::charsetName;
+            $charsets{$_} = 1 foreach values %ExifTool::charsetName;
             PrintTagList('Available character sets', sort keys %charsets);
             $helped = 1;
         } elsif ($charset !~ s/^(\w+)=// or lc($1) eq 'exiftool') {
@@ -616,8 +608,8 @@ for (;;) {
             $csvFile =~ s/^(\+?=)//;
             $csvAdd = 2 if $1 eq '+=';
             $verbose and print "Reading CSV file $csvFile\n";
-            require Image::ExifTool::Import;
-            my $msg = Image::ExifTool::Import::ReadCSV($csvFile, \%database, $forcePrint);
+            require ExifTool::Import;
+            my $msg = ExifTool::Import::ReadCSV($csvFile, \%database, $forcePrint);
             $msg and Warn("$msg\n");
             $isWriting = 1;
         }
@@ -634,7 +626,7 @@ for (;;) {
     /^delete_original(!?)$/i and $deleteOrig = ($1 ? 2 : 1), next;
     (/^e$/ or $a eq '-composite') and $mainTool->Options(Composite => 0), next;
     (/^-e$/ or $a eq 'composite') and $mainTool->Options(Composite => 1), next;
-    (/^E$/ or $a eq 'escapehtml') and require Image::ExifTool::HTML and $escapeHTML = 1, next;
+    (/^E$/ or $a eq 'escapehtml') and require ExifTool::HTML and $escapeHTML = 1, next;
     ($a eq 'ex' or $a eq 'escapexml') and $escapeXML = 1, next;
     if (/^echo(2)?$/i) {
         next unless @ARGV;
@@ -697,7 +689,7 @@ for (;;) {
         # (fall through!)
     }
     if (/^h$/ or $a eq 'htmlformat') {
-        require Image::ExifTool::HTML;
+        require ExifTool::HTML;
         $html = $escapeHTML = 1;
         $json = $xml = 0;
         next;
@@ -740,8 +732,8 @@ for (;;) {
             $csvAdd = 2 if $1 eq '+=';
             $verbose and print "Reading JSON file $jsonFile\n";
             my $chset = $mainTool->Options('Charset');
-            require Image::ExifTool::Import;
-            my $msg = Image::ExifTool::Import::ReadJSON($jsonFile, \%database, $forcePrint, $chset);
+            require ExifTool::Import;
+            my $msg = ExifTool::Import::ReadJSON($jsonFile, \%database, $forcePrint, $chset);
             $msg and Warn("$msg\n");
             $isWriting = 1;
             $csv = 'JSON';
@@ -749,7 +741,7 @@ for (;;) {
             $json = 1;
             $html = $xml = 0;
             $mainTool->Options(Duplicates => 1);
-            require Image::ExifTool::XMP;   # for FixUTF8()
+            require ExifTool::XMP;   # for FixUTF8()
         }
         next;
     }
@@ -767,10 +759,10 @@ for (;;) {
             $pass or push(@nextPass, '-lang'), next;
         }
         my $langs = "Available languages:\n";
-        $langs .= "  $_ - $Image::ExifTool::langName{$_}\n" foreach @Image::ExifTool::langs;
+        $langs .= "  $_ - $ExifTool::langName{$_}\n" foreach @ExifTool::langs;
         $langs =~ tr/_/-/;  # display dashes instead of underlines in language codes
         $langs = $mainTool->Decode($langs, 'UTF8');
-        $langs = Image::ExifTool::HTML::EscapeHTML($langs) if $escapeHTML;
+        $langs = ExifTool::HTML::EscapeHTML($langs) if $escapeHTML;
         $lang and Error("Invalid or unsupported language '$lang'.\n$langs"), next Command;
         print $langs;
         $helped = 1;
@@ -804,11 +796,11 @@ for (;;) {
     /^r(ecurse)?$/i and $recurse = 1, next;
     if ($a eq 'require') { # undocumented, added in version 8.65
         my $ver = shift;
-        unless (defined $ver and Image::ExifTool::IsFloat($ver)) {
+        unless (defined $ver and ExifTool::IsFloat($ver)) {
             Error("Expecting version number for -require option\n");
             next Command;
         }
-        unless ($Image::ExifTool::VERSION >= $ver) {
+        unless ($ExifTool::VERSION >= $ver) {
             Error("Requires ExifTool version $ver or later\n");
             next Command;
         }
@@ -887,7 +879,7 @@ for (;;) {
         $module or Error("Expecting module name for -use option\n"), next Command;
         lc $module eq 'mwg' and $useMWG = 1, next;
         local $SIG{'__WARN__'} = sub { $evalWarning = $_[0] };
-        unless (eval "require Image::ExifTool::$module" or
+        unless (eval "require ExifTool::$module" or
                 eval "require $module" or
                 eval "require '$module'")
         {
@@ -1059,7 +1051,7 @@ if ($sortOpt) {
 
 # set up for RDF/XML, JSON and PHP output formats
 if ($xml) {
-    require Image::ExifTool::XMP;   # for EscapeXML()
+    require ExifTool::XMP;   # for EscapeXML()
     my $charset = $mainTool->Options('Charset');
     # standard XML encoding names for supported Charset settings
     # (ref http://www.iana.org/assignments/character-sets)
@@ -1217,7 +1209,7 @@ if (@newValues) {
             } else {
                 $tag =~ s/([-+]|\xe2\x88\x92)$// and $opts{$addDelOpt{$1}} = 1;
                 # verify that this tag can be written
-                my $result = Image::ExifTool::IsWritable($tag);
+                my $result = ExifTool::IsWritable($tag);
                 if ($result) {
                     $opts{ProtectSaved} = $saveCount;   # protect new values set after this
                     # add to list of dynamic tag values
@@ -1274,7 +1266,7 @@ $fixLen = ($utf8 and $mainTool->Options('Lang') ne 'en' and eval 'require Encode
 if (@fileOrder) {
     my @allFiles;
     ProcessFiles(undef, \@allFiles);
-    my $sortTool = new Image::ExifTool;
+    my $sortTool = new ExifTool;
     $sortTool->Options(PrintConv => $mainTool->Options('PrintConv'));
     $sortTool->Options(Duplicates => 0);
     my (%sortBy, %isFloat, @rev, $file);
@@ -1525,8 +1517,8 @@ sub GetImageInfo($$)
     my $o;
     unless ($binaryOutput or $textOut or %printFmt or $html > 1 or $csv) {
         if ($html) {
-            require Image::ExifTool::HTML;
-            my $f = Image::ExifTool::HTML::EscapeHTML($file);
+            require ExifTool::HTML;
+            my $f = ExifTool::HTML::EscapeHTML($file);
             print "<!-- $f -->\n";
         } elsif (not ($json or $xml)) {
             $o = \*STDOUT if ($multiFile and not $quiet) or $progress;

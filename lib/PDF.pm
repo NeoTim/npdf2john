@@ -14,11 +14,11 @@
 #               6) http://www.armware.dk/RFC/rfc/rfc4013.html
 #------------------------------------------------------------------------------
 
-package Image::ExifTool::PDF;
+package PDF;
 
 use strict;
 use vars qw($VERSION $AUTOLOAD $lastFetched);
-use Image::ExifTool qw(:DataAccess :Utils);
+use ExifTool qw(:DataAccess :Utils);
 require Exporter;
 
 $VERSION = '1.31';
@@ -43,18 +43,18 @@ my %fetched;        # dicts fetched in verbose mode (to avoid cyclical recursion
 my $pdfVer;         # version of PDF file being processed
 
 # tags in main PDF directories
-%Image::ExifTool::PDF::Main = (
+%PDF::Main = (
     GROUPS => { 2 => 'Document' },
     VARS => { CAPTURE => ['Main','Prev'] },
     Info => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Info' },
+        SubDirectory => { TagTable => 'PDF::Info' },
     },
     Root => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Root' },
+        SubDirectory => { TagTable => 'PDF::Root' },
     },
     Encrypt => {
         NoProcess => 1, # don't process normally (processed in advance)
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Encrypt' },
+        SubDirectory => { TagTable => 'PDF::Encrypt' },
     },
     _linearized => {
         Name => 'Linearized',
@@ -64,7 +64,7 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF Info dictionary
-%Image::ExifTool::PDF::Info = (
+%PDF::Info = (
     GROUPS => { 2 => 'Document' },
     VARS => { CAPTURE => ['Info'] },
     EXTRACT_UNKNOWN => 1, # extract all unknown tags in this directory
@@ -119,25 +119,25 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in the PDF Root document catalog
-%Image::ExifTool::PDF::Root = (
+%PDF::Root = (
     GROUPS => { 2 => 'Document' },
     # note: can't capture previous versions of Root since they are not parsed
     VARS => { CAPTURE => ['Root'] },
     NOTES => 'This is the PDF document catalog.',
     MarkInfo => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::MarkInfo' },
+        SubDirectory => { TagTable => 'PDF::MarkInfo' },
     },
     Metadata => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Metadata' },
+        SubDirectory => { TagTable => 'PDF::Metadata' },
     },
     Pages => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Pages' },
+        SubDirectory => { TagTable => 'PDF::Pages' },
     },
     Perms => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Perms' },
+        SubDirectory => { TagTable => 'PDF::Perms' },
     },
     AcroForm => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::AcroForm' },
+        SubDirectory => { TagTable => 'PDF::AcroForm' },
     },
     Lang       => 'Language',
     PageLayout => { },
@@ -146,7 +146,7 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags extracted from the PDF Encrypt dictionary
-%Image::ExifTool::PDF::Encrypt = (
+%PDF::Encrypt = (
     GROUPS => { 2 => 'Document' },
     NOTES => 'Tags extracted from the document Encrypt dictionary.',
     Filter => {
@@ -174,30 +174,30 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF Pages dictionary
-%Image::ExifTool::PDF::Pages = (
+%PDF::Pages = (
     GROUPS => { 2 => 'Document' },
     Count => 'PageCount',
     Kids => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Kids' },
+        SubDirectory => { TagTable => 'PDF::Kids' },
     },
 );
 
 # tags in PDF Perms dictionary
-%Image::ExifTool::PDF::Perms = (
+%PDF::Perms = (
     NOTES => 'Additional document permissions imposed by digital signatures.',
     DocMDP => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Signature' },
+        SubDirectory => { TagTable => 'PDF::Signature' },
     },
     FieldMDP => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Signature' },
+        SubDirectory => { TagTable => 'PDF::Signature' },
     },
     UR3 => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Signature' },
+        SubDirectory => { TagTable => 'PDF::Signature' },
     },
 );
 
 # tags in PDF Perms dictionary
-%Image::ExifTool::PDF::AcroForm = (
+%PDF::AcroForm = (
     PROCESS_PROC => \&ProcessAcroForm,
     _has_xfa => {
         Name => 'HasXFA',
@@ -210,50 +210,50 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF Kids dictionary
-%Image::ExifTool::PDF::Kids = (
+%PDF::Kids = (
     Metadata => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Metadata' },
+        SubDirectory => { TagTable => 'PDF::Metadata' },
     },
     PieceInfo => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::PieceInfo' },
+        SubDirectory => { TagTable => 'PDF::PieceInfo' },
     },
     Resources => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Resources' },
+        SubDirectory => { TagTable => 'PDF::Resources' },
     },
 );
 
 # tags in PDF Resources dictionary
-%Image::ExifTool::PDF::Resources = (
+%PDF::Resources = (
     ColorSpace => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::ColorSpace' },
+        SubDirectory => { TagTable => 'PDF::ColorSpace' },
     },
 );
 
 # tags in PDF ColorSpace dictionary
-%Image::ExifTool::PDF::ColorSpace = (
+%PDF::ColorSpace = (
     DefaultRGB => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::DefaultRGB' },
+        SubDirectory => { TagTable => 'PDF::DefaultRGB' },
     },
 );
 
 # tags in PDF DefaultRGB dictionary
-%Image::ExifTool::PDF::DefaultRGB = (
+%PDF::DefaultRGB = (
     ICCBased => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::ICCBased' },
+        SubDirectory => { TagTable => 'PDF::ICCBased' },
     },
 );
 
 # tags in PDF ICCBased dictionary
-%Image::ExifTool::PDF::ICCBased = (
+%PDF::ICCBased = (
     _stream => {
         SubDirectory => { TagTable => 'Image::ExifTool::ICC_Profile::Main' },
     },
 );
 
 # tags in PDF PieceInfo dictionary
-%Image::ExifTool::PDF::PieceInfo = (
+%PDF::PieceInfo = (
     AdobePhotoshop => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::AdobePhotoshop' },
+        SubDirectory => { TagTable => 'PDF::AdobePhotoshop' },
     },
     Illustrator => {
         # assume this is an illustrator file if it contains this directory
@@ -262,37 +262,37 @@ my $pdfVer;         # version of PDF file being processed
             $self->OverrideFileType("AI") unless $$self{FILE_EXT} and $$self{FILE_EXT} eq 'PDF';
             return 1;
         },
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Illustrator' },
+        SubDirectory => { TagTable => 'PDF::Illustrator' },
     },
 );
 
 # tags in PDF AdobePhotoshop dictionary
-%Image::ExifTool::PDF::AdobePhotoshop = (
+%PDF::AdobePhotoshop = (
     Private => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Private' },
+        SubDirectory => { TagTable => 'PDF::Private' },
     },
 );
 
 # tags in PDF Illustrator dictionary
-%Image::ExifTool::PDF::Illustrator = (
+%PDF::Illustrator = (
     Private => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::AIPrivate' },
+        SubDirectory => { TagTable => 'PDF::AIPrivate' },
     },
 );
 
 # tags in PDF Private dictionary
-%Image::ExifTool::PDF::Private = (
+%PDF::Private = (
     ImageResources => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::ImageResources' },
+        SubDirectory => { TagTable => 'PDF::ImageResources' },
     },
 );
 
 # tags in PDF AI Private dictionary
-%Image::ExifTool::PDF::AIPrivate = (
+%PDF::AIPrivate = (
     GROUPS => { 2 => 'Document' },
     EXTRACT_UNKNOWN => 0,   # extract known but numbered tags
     AIMetaData => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::AIMetaData' },
+        SubDirectory => { TagTable => 'PDF::AIMetaData' },
     },
     AIPrivateData => {
         Notes => q{
@@ -307,21 +307,21 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF AIMetaData dictionary
-%Image::ExifTool::PDF::AIMetaData = (
+%PDF::AIMetaData = (
     _stream => {
         SubDirectory => { TagTable => 'Image::ExifTool::PostScript::Main' },
     },
 );
 
 # tags in PDF ImageResources dictionary
-%Image::ExifTool::PDF::ImageResources = (
+%PDF::ImageResources = (
     _stream => {
         SubDirectory => { TagTable => 'Image::ExifTool::Photoshop::Main' },
     },
 );
 
 # tags in PDF MarkInfo dictionary
-%Image::ExifTool::PDF::MarkInfo = (
+%PDF::MarkInfo = (
     GROUPS => { 2 => 'Document' },
     Marked => {
         Name => 'TaggedPDF',
@@ -331,7 +331,7 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF Metadata dictionary
-%Image::ExifTool::PDF::Metadata = (
+%PDF::Metadata = (
     GROUPS => { 2 => 'Document' },
     XML_stream => { # this is the stream for a Subtype /XML dictionary (not a real tag)
         Name => 'XMP',
@@ -340,7 +340,7 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF signature directories (DocMDP, FieldMDP or UR3)
-%Image::ExifTool::PDF::Signature = (
+%PDF::Signature = (
     GROUPS => { 2 => 'Document' },
     ContactInfo => 'SignerContactInfo',
     Location => 'SigningLocation',
@@ -353,7 +353,7 @@ my $pdfVer;         # version of PDF file being processed
     Name     => 'SigningAuthority',
     Reason   => 'SigningReason',
     Reference => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::Reference' },
+        SubDirectory => { TagTable => 'PDF::Reference' },
     },
     Prop_AuthTime => {
         Name => 'AuthenticationTime',
@@ -363,14 +363,14 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # tags in PDF Reference dictionary
-%Image::ExifTool::PDF::Reference = (
+%PDF::Reference = (
     TransformParams => {
-        SubDirectory => { TagTable => 'Image::ExifTool::PDF::TransformParams' },
+        SubDirectory => { TagTable => 'PDF::TransformParams' },
     },
 );
 
 # tags in PDF TransformParams dictionary
-%Image::ExifTool::PDF::TransformParams = (
+%PDF::TransformParams = (
     GROUPS => { 2 => 'Document' },
     Annots => {
         Name => 'AnnotationUsageRights',
@@ -441,7 +441,7 @@ my $pdfVer;         # version of PDF file being processed
 );
 
 # unknown tags for use in verbose option
-%Image::ExifTool::PDF::Unknown = (
+%PDF::Unknown = (
     GROUPS => { 2 => 'Unknown' },
 );
 
@@ -1133,7 +1133,7 @@ sub DecryptInit($$$)
     $enc .= ".$rev" if $filt eq 'Standard';
     $enc .= " ($1)" if $$encrypt{SubFilter} and $$encrypt{SubFilter} =~ /^\/(.*)/;
     $enc .= ' (' . ($$encrypt{Length} || 40) . '-bit)' if $filt eq 'Standard';
-    my $tagTablePtr = GetTagTable('Image::ExifTool::PDF::Encrypt');
+    my $tagTablePtr = GetTagTable('PDF::Encrypt');
     $exifTool->HandleTag($tagTablePtr, 'Filter', $enc);
     if ($filt ne 'Standard') {
         return "Encryption filter $filt not currently supported";
@@ -1534,7 +1534,7 @@ sub ProcessDict($$$$;$$)
                 $tagInfo or $tagInfo = {
                     Name => $tag,
                     SubDirectory => {
-                        TagTable => 'Image::ExifTool::PDF::Unknown',
+                        TagTable => 'PDF::Unknown',
                     },
                 };
             } else {
@@ -1736,9 +1736,9 @@ sub ReadPDF($$)
     $exifTool->SetFileType();   # set the FileType tag
     $exifTool->Warn("May not be able to read a PDF version $pdfVer file") if $pdfVer >= 2.0;
     # store PDFVersion tag
-    my $tagTablePtr = GetTagTable('Image::ExifTool::PDF::Root');
+    my $tagTablePtr = GetTagTable('PDF::Root');
     $exifTool->HandleTag($tagTablePtr, 'Version', $pdfVer);
-    $tagTablePtr = GetTagTable('Image::ExifTool::PDF::Main');
+    $tagTablePtr = GetTagTable('PDF::Main');
 #
 # check for a linearized PDF (only if reading)
 #
@@ -1901,6 +1901,9 @@ XRef:
             return -1;
         }
     }
+    else {
+        print " not encrypted!\n"
+    }
 #
 # extract the information beginning with each of the main dictionaries
 #
@@ -1970,7 +1973,7 @@ __END__
 
 =head1 NAME
 
-Image::ExifTool::PDF - Read PDF meta information
+PDF - Read PDF meta information
 
 =head1 SYNOPSIS
 
