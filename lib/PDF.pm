@@ -1202,7 +1202,7 @@ sub DecryptInit($$$)
         $$encrypt{_meta} = 1;
     }
 
-    printf("\$npdf\$%d*%d*%d*%d*%d*%d*", $ver, $rev, $$encrypt{Length} || 40, $$encrypt{P}, $$encrypt{_meta} || 0, length($id));
+    printf("\$pdf\$%d*%d*%d*%d*%d*%d*", $ver, $rev, $$encrypt{Length} || 40, $$encrypt{P}, $$encrypt{_meta} || 0, length($id));
     my $str = $id;
     $str =~ s/(.)/ sprintf '%02x', ord $1 /seg;
     printf("%s*", $str);
