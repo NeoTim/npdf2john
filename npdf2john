@@ -9,6 +9,14 @@
 #
 # References:   ATV - Alexander Vonk, private communication
 #------------------------------------------------------------------------------
+#
+# Copyright 2003-2017, Phil Harvey
+#
+# This is free software; you can redistribute it and/or modify it under the
+# same terms as Perl itself.
+#
+# "npdf2john" is written by Dhiru Kholia.
+
 use strict;
 require 5.004;
 
