@@ -15,7 +15,7 @@
 # This is free software; you can redistribute it and/or modify it under the
 # same terms as Perl itself.
 #
-# "npdf2john" is written by Dhiru Kholia.
+# "pdf2john.pl" was glued together by Dhiru Kholia.
 
 use strict;
 require 5.004;
@@ -1009,8 +1009,8 @@ unless ((@tags and not $outOpt) or @files or @newValues) {
             open STDERR, '>/dev/null';
         }
         if (system('perldoc',$0)) {
-            print "Syntax:  exiftool [OPTIONS] FILE\n\n";
-            print "Consult the exiftool documentation for a full list of options.\n";
+            print "Syntax:  pdf2john.pl <.pdf file(s)>\n";
+            # print "Consult the exiftool documentation for a full list of options.\n";
         }
         unless ($^O eq 'os2') {
             close STDERR;
