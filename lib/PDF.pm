@@ -246,7 +246,7 @@ my $pdfVer;         # version of PDF file being processed
 # tags in PDF ICCBased dictionary
 %PDF::ICCBased = (
     _stream => {
-        SubDirectory => { TagTable => 'Image::ExifTool::ICC_Profile::Main' },
+        # SubDirectory => { TagTable => 'Image::ExifTool::ICC_Profile::Main' },
     },
 );
 
