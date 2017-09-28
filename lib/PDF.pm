@@ -287,14 +287,14 @@ my %supportedFilter = (
 # tags in PDF Cs1 dictionary
 %PDF::Cs1 = (
     _stream => {
-        SubDirectory => { TagTable => 'ICC_Profile::Main' },
+        # SubDirectory => { TagTable => 'ICC_Profile::Main' },
     },
 );
 
 # tags in PDF ICCBased dictionary
 %PDF::ICCBased = (
     _stream => {
-        SubDirectory => { TagTable => 'ICC_Profile::Main' },
+        # SubDirectory => { TagTable => 'ICC_Profile::Main' },
     },
 );
 
@@ -441,7 +441,7 @@ my %supportedFilter = (
     GROUPS => { 2 => 'Document' },
     XML_stream => { # this is the stream for a Subtype /XML dictionary (not a real tag)
         Name => 'XMP',
-        SubDirectory => { TagTable => 'XMP::Main' },
+        # SubDirectory => { TagTable => 'XMP::Main' },
     },
 );
 
@@ -2061,7 +2061,7 @@ sub ProcessDict($$$$;$$)
         my $tagInfo = $et->GetTagInfo($tagTablePtr, $tag) or last;
         unless ($$tagInfo{SubDirectory}) {
             # don't build filter lists across different images
-            delete $$et{LIST_TAGS}{$$tagTablePtr{Filter}};
+            # delete $$et{LIST_TAGS}{$$tagTablePtr{Filter}};
             # we arrive here only when extracting embedded images
             # - only extract known image types and ignore others
             my $filter = $$dict{Filter} || '';
